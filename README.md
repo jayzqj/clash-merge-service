@@ -56,6 +56,8 @@ deploy/
 | `subconverter_base` / `use_remote_subconverter` / `merged_public_url` | 见下“转换方式” |
 | `output_path` | 最终文件路径，VPS 上如 `/var/www/xiuyuan/jay_filtered.yaml` |
 | `purity_enabled` | 纯净度检测开关；关则全部标记未测，仍保留全部节点 |
+| `purity_workers` | 并行检测 worker 数（1–16，默认 1 = 串行）；每个 worker 独占一个 mihomo 实例（端口 base+i、工作目录 `mihomo/worker-i`），节点轮询分片。4 worker 时 409 节点一轮约 10–20 分钟（串行约 60 分钟）。2GB VPS 建议 ≤4，每个实例多占约 30–50MB。管理页可调 |
+| `check_front` | 静态节点检测专用前置：一个完整的节点定义（订阅里一个 `proxies` 项的形状），只写配置文件，不进管理页，接口只回显名字/类型/服务器，密码永不回显。**必须配**：Bright Data 网关只接受特定出口 IP 的链路——实测 2026-11-12，机场前置（洛杉矶 hysteria2、日本 vless/hysteria2）走静态节点全部被掐断，只有用户 VPS 上的 Racknerd anytls 节点（出口即 VPS IP）能测通，分数与老任务完全一致（静态01 57%、02 28%、03 20%）。不配时回退到从订阅里挑前置，静态节点基本测不到 |
 | `mihomo_bin` / `mihomo_workdir` / `mihomo_mixed_port` / `mihomo_controller_port` | 检测用 mihomo 的位置与端口（默认 7890 / 9090，避开 sing-box 已占端口，部署时先核对） |
 
 管理员账号密码**不在** `config.json` 里，来自环境变量：
@@ -81,10 +83,12 @@ webhook（只显示是否已设置）。
    密码/UUID 相同，只靠 `servername` 与 `ws-opts.path` 区分；反过来，
    共用 server+port 的 hysteria2 节点（洛杉矶 1/2 号、东京 1–3 号）除名字
    外全部字段相同，是同一端点挂了多个名字，按规则应合并为一个。
-3. 纯净度检测：mihomo 逐个切换节点自查，串行、每节点失败重试 3 次；
+3. 纯净度检测：mihomo 逐个切换节点自查，每节点失败重试 3 次；
    记录出口 IP、国家、fraudScore，校验出口 IP 与节点预期 IP 是否一致，
    验证链接记为 `https://ippure.com/?ip=<IP>`；节点按 IP 识别，不按国家标签。
    **不设阈值，全部保留**；只用于排序（已测按分数升序，未测排最后、保持原顺序）。
+   并行数见 `purity_workers`（每个 worker 一个 mihomo 实例）。
+   静态节点检测时走配置的 `check_front`（见上表），不用它网关会拒绝。
    排序后，测到的节点会在名字前加上纯净度分数，例如
    `日本02 三网高速`（fraudScore 5）变成 `5%-日本02 三网高速`；
    没测到的节点保持原名。加前缀不影响分组匹配（ini 的分组正则都是

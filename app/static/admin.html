@@ -42,6 +42,8 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 <label>转换服务地址</label><input type="text" id="subconv">
 <label>输出文件路径（VPS 上）</label><input type="text" id="output">
 <label><input type="checkbox" id="purity"> 启用纯净度检测（mihomo 逐节点自查；关则全部标记未测，仍保留全部节点）</label>
+<div class="row"><div><label>纯净度检测并行数（1–16；每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4）</label><input type="number" id="workers" min="1" max="16"></div>
+<div><label>静态节点检测前置（仅配置文件可改，页面只显示）</label><div class="mono" id="checkFront">—</div></div></div>
 <label><input type="checkbox" id="remote"> 使用远程 subconverter（需另填下方公开合并地址，否则保持本地套用 ini）</label>
 <label>公开的合并中间文件地址（仅远程模式用）</label><input type="text" id="mergedUrl" placeholder="https://…/merged.yaml">
 <button onclick="saveSettings()">保存设置并立即执行</button>
@@ -67,6 +69,11 @@ async function refresh(){
   document.getElementById('subconv').value = c.subconverter_base||'';
   document.getElementById('output').value = c.output_path||'';
   document.getElementById('purity').checked = !!c.purity_enabled;
+  document.getElementById('workers').value = c.purity_workers||1;
+  const cf = c.check_front||{};
+  document.getElementById('checkFront').textContent = cf.configured ?
+    ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+ (cf.server||'') +':'+(cf.port||'')+'）') :
+    '未配置：静态节点改用订阅里的前置，Bright Data 网关可能拒绝，测不到';
   document.getElementById('remote').checked = !!c.use_remote_subconverter;
   document.getElementById('mergedUrl').value = c.merged_public_url||'';
   document.getElementById('subs').innerHTML = (c.subscriptions||[]).map(s=>
@@ -92,6 +99,7 @@ async function saveSettings(){
     subconverter_base: document.getElementById('subconv').value.trim(),
     output_path: document.getElementById('output').value.trim(),
     purity_enabled: document.getElementById('purity').checked,
+    purity_workers: parseInt(document.getElementById('workers').value,10)||1,
     use_remote_subconverter: document.getElementById('remote').checked,
     merged_public_url: document.getElementById('mergedUrl').value.trim()};
   const w = document.getElementById('webhook').value.trim();

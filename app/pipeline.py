@@ -14,7 +14,8 @@ Scheduler: internal asyncio loop, no cron. A threading lock makes
 overlapping runs impossible: a scheduled/manual trigger while a run
 is in progress is skipped and logged, never run concurrently (a
 ~270-node serial purity round can take tens of minutes, longer than
-a short interval).
+a short interval; ``purity_workers`` runs N mihomo instances in
+parallel to cut that down).
 """
 from __future__ import annotations
 
@@ -128,6 +129,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             report.update(mstats)
 
             step = "purity"
+            report["purity_workers"] = cfg.purity_workers
             checker = MihomoChecker(cfg)
             purity = await asyncio.to_thread(checker.check_all, merged)
             measured = sum(1 for r in purity.values() if r.get("measured"))

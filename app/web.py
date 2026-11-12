@@ -111,6 +111,7 @@ class SettingsIn(BaseModel):
     subconverter_base: str | None = None
     output_path: str | None = None
     purity_enabled: bool | None = None
+    purity_workers: int | None = None
     use_remote_subconverter: bool | None = None
     merged_public_url: str | None = None
 
@@ -142,6 +143,8 @@ async def api_put_config(body: SettingsIn, request: Request,
         data["output_path"] = body.output_path.strip()
     if body.purity_enabled is not None:
         data["purity_enabled"] = body.purity_enabled
+    if body.purity_workers is not None:
+        data["purity_workers"] = body.purity_workers
     if body.use_remote_subconverter is not None:
         data["use_remote_subconverter"] = body.use_remote_subconverter
     if body.merged_public_url is not None:

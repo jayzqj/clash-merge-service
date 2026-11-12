@@ -33,6 +33,16 @@ DEFAULTS: dict = {
     "output_path": "/var/www/xiuyuan/jay_filtered.yaml",
     "purity_enabled": True,
     "purity_info_url": "https://my.123169.xyz/v1/info",
+    "purity_workers": 1,
+    # Dedicated front for backend (静态) purity checks: a full proxy
+    # dict (same shape as one entry of a subscription's "proxies").
+    # The Bright Data gateway rejects airport-front exit IPs, so
+    # backend checks ride this front (verified 2026-11-12: the
+    # user's Racknerd anytls node, exit = VPS IP). Null = fall back
+    # to picking a front from the merged nodes (statics will usually
+    # end up unmeasured). Config-file only, never edited on /admin
+    # (it carries the node's password) and never echoed by the API.
+    "check_front": None,
     "mihomo_bin": "mihomo",
     "mihomo_workdir": "/opt/clash-merge-service/mihomo",
     "mihomo_mixed_port": 7890,
@@ -81,6 +91,18 @@ def mask_webhook(url: str) -> str:
     if not url:
         return ""
     return "set" if url else ""
+
+
+def mask_check_front(front) -> dict:
+    """check_front for display/API: identity only, never secrets
+    (password, uuid, token, private key)."""
+    if not isinstance(front, dict):
+        return {}
+    return {"configured": True,
+            "name": str(front.get("name", "")),
+            "type": str(front.get("type", "")),
+            "server": str(front.get("server", "")),
+            "port": front.get("port", "")}
 
 
 @dataclass
@@ -142,6 +164,18 @@ class Config:
     def min_interval_seconds(self) -> int:
         return int(self.data.get("min_interval_seconds", 300))
 
+    @property
+    def purity_workers(self) -> int:
+        try:
+            return max(1, min(int(self.data.get("purity_workers", 1) or 1), 16))
+        except (TypeError, ValueError):
+            return 1
+
+    @property
+    def check_front(self) -> dict | None:
+        front = self.data.get("check_front")
+        return front if isinstance(front, dict) else None
+
     # -- validation -----------------------------------------------------
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -149,6 +183,20 @@ class Config:
             errors.append(
                 f"interval_seconds must be >= {self.min_interval_seconds} "
                 f"(a full purity round over ~270 nodes takes tens of minutes)")
+        try:
+            workers = int(self.data.get("purity_workers", 1) or 1)
+        except (TypeError, ValueError):
+            workers = 0
+        if not 1 <= workers <= 16:
+            errors.append("purity_workers must be between 1 and 16")
+        front = self.data.get("check_front")
+        if front is not None:
+            if not isinstance(front, dict):
+                errors.append("check_front must be a proxy object or null")
+            else:
+                for key in ("name", "type", "server", "port"):
+                    if not front.get(key):
+                        errors.append(f"check_front is missing {key}")
         for s in self.subscriptions:
             url = (s.get("url") or "").strip()
             if not url:
@@ -174,6 +222,8 @@ class Config:
         """
         view = copy.deepcopy(self.data)
         view["wechat_webhook"] = mask_webhook(view.get("wechat_webhook", ""))
+        # The check front carries its node's password: never echo it.
+        view["check_front"] = mask_check_front(view.get("check_front"))
         return view
 
     def new_subscription_id(self) -> str:
