@@ -1,0 +1,25 @@
+[Unit]
+Description=Clash merge subscription service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/clash-merge-service
+# Admin password + config path come from this file (NOT in the repo):
+#   ADMIN_USER=jayzqj
+#   ADMIN_PASSWORD=<set on the VPS only>
+#   CLASH_MERGE_CONFIG=/opt/clash-merge-service/config.json
+#   PORT=18080
+EnvironmentFile=/etc/clash-merge/env
+ExecStart=/opt/clash-merge-service/venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+# The service itself is light (tens of MB); mihomo is only spawned
+# during a purity round and stopped afterwards. Keep the cap generous
+# enough for a full round, tight enough for the 2 GB box.
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

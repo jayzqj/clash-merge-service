@@ -1,0 +1,19 @@
+# Real config with subscription URLs (tokens), webhook and passwords.
+config.json
+.env
+*.env
+# Generated output — served by nginx, never committed.
+*.yaml
+*.yml
+!requirements.yaml
+data/
+state.json
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# mihomo runtime (binary + geodata + temp configs, VPS only)
+bin/
+mihomo/
+*.log

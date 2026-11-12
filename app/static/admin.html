@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clash 合并订阅 · 管理</title>
+<style>
+body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#222}
+h1{font-size:20px}h2{font-size:16px;margin-top:28px}
+.card{border:1px solid #ddd;border-radius:8px;padding:14px;margin:10px 0}
+table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eee;padding:6px 4px;text-align:left;font-size:13px;word-break:break-all}
+input[type=text],input[type=number]{width:100%;padding:6px;box-sizing:border-box}
+button{padding:6px 14px;margin:4px 4px 4px 0;cursor:pointer}
+.mono{font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all}
+label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
+.row{display:flex;gap:12px}.row>div{flex:1}
+.ok{color:green}.bad{color:red}
+</style>
+</head>
+<body>
+<h1>Clash 合并订阅 · 管理</h1>
+<p>最终地址：<code>https://xiuyuan.9527653.xyz/jay_filtered.yaml</code>（由 nginx 静态提供，不经过本服务）</p>
+
+<div class="card" id="status"><h2>运行状态</h2><div class="mono" id="statusText">加载中…</div>
+<button onclick="runNow()">立即执行一次</button>
+<button onclick="refresh()">刷新状态</button></div>
+
+<div class="card"><h2>订阅源</h2>
+<table><thead><tr><th>ID</th><th>地址（已隐藏 token）</th><th>启用</th><th>操作</th></tr></thead>
+<tbody id="subs"></tbody></table>
+<h3>新增订阅（只需填一个订阅 URL）</h3>
+<input type="text" id="newUrl" placeholder="https://…">
+<button onclick="addSub()">新增并立即执行</button>
+<div id="subMsg"></div></div>
+
+<div class="card"><h2>设置</h2>
+<div class="row"><div><label>执行间隔（秒，≥300）</label><input type="number" id="interval"></div>
+<div><label>企业微信通知</label><select id="notify"><option value="true">开（成功和失败都发）</option><option value="false">关（不发任何通知）</option></select></div></div>
+<label>企业微信 webhook（留空 = 保持现有值；页面和接口从不回显真实地址）</label>
+<input type="text" id="webhook" placeholder="留空保持不变">
+<label>自定义规则 ini 地址</label><input type="text" id="ini">
+<label>转换服务地址</label><input type="text" id="subconv">
+<label>输出文件路径（VPS 上）</label><input type="text" id="output">
+<label><input type="checkbox" id="purity"> 启用纯净度检测（mihomo 逐节点自查；关则全部标记未测，仍保留全部节点）</label>
+<label><input type="checkbox" id="remote"> 使用远程 subconverter（需另填下方公开合并地址，否则保持本地套用 ini）</label>
+<label>公开的合并中间文件地址（仅远程模式用）</label><input type="text" id="mergedUrl" placeholder="https://…/merged.yaml">
+<button onclick="saveSettings()">保存设置并立即执行</button>
+<div id="setMsg"></div></div>
+
+<div class="card"><h2>上次执行结果</h2><div class="mono" id="lastRun">—</div></div>
+
+<script>
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({credentials:'include'}, opts||{}));
+  if(!r.ok){ const t = await r.text(); throw new Error(r.status+' '+t); }
+  return r.json();
+}
+async function refresh(){
+  const s = await api('/api/status');
+  document.getElementById('statusText').textContent =
+    '运行中：'+s.running+'\n下次执行：'+(s.next_run||'—')+'\n累计启动：'+s.runs_started+' 轮，重叠跳过：'+s.runs_skipped_overlap+' 次\n'+(s.last_error?'最近错误：'+s.last_error:'');
+  document.getElementById('lastRun').textContent = s.last_run ? JSON.stringify(s.last_run,null,2) : '—';
+  const c = await api('/api/config');
+  document.getElementById('interval').value = c.interval_seconds;
+  document.getElementById('notify').value = String(c.notify_enabled);
+  document.getElementById('ini').value = c.ini_url||'';
+  document.getElementById('subconv').value = c.subconverter_base||'';
+  document.getElementById('output').value = c.output_path||'';
+  document.getElementById('purity').checked = !!c.purity_enabled;
+  document.getElementById('remote').checked = !!c.use_remote_subconverter;
+  document.getElementById('mergedUrl').value = c.merged_public_url||'';
+  document.getElementById('subs').innerHTML = (c.subscriptions||[]).map(s=>
+    '<tr><td>'+s.id+'</td><td>'+(s.url_masked||'')+'</td><td>'+(s.enabled?'是':'否')+'</td>'+
+    '<td><button onclick="toggleSub(\''+s.id+'\','+!s.enabled+')">'+(s.enabled?'停用':'启用')+'</button> '+
+    '<button onclick="delSub(\''+s.id+'\')">删除</button></td></tr>').join('');
+}
+async function addSub(){
+  const url = document.getElementById('newUrl').value.trim();
+  if(!url) return;
+  try{ await api('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+    document.getElementById('subMsg').textContent='已新增，正在按新列表执行一轮。'; document.getElementById('newUrl').value=''; refresh();
+  }catch(e){ document.getElementById('subMsg').textContent='失败：'+e.message; }
+}
+async function delSub(id){ if(!confirm('删除该订阅源？将立即按新列表执行一轮。')) return;
+  await api('/api/subscriptions/'+id,{method:'DELETE'}); refresh(); }
+async function toggleSub(id, enabled){
+  await api('/api/subscriptions/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}); refresh(); }
+async function saveSettings(){
+  const body = {interval_seconds: parseInt(document.getElementById('interval').value,10),
+    notify_enabled: document.getElementById('notify').value==='true',
+    ini_url: document.getElementById('ini').value.trim(),
+    subconverter_base: document.getElementById('subconv').value.trim(),
+    output_path: document.getElementById('output').value.trim(),
+    purity_enabled: document.getElementById('purity').checked,
+    use_remote_subconverter: document.getElementById('remote').checked,
+    merged_public_url: document.getElementById('mergedUrl').value.trim()};
+  const w = document.getElementById('webhook').value.trim();
+  if(w) body.wechat_webhook = w;
+  try{ await api('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    document.getElementById('setMsg').textContent='已保存，正在按新配置执行一轮。'; refresh();
+  }catch(e){ document.getElementById('setMsg').textContent='保存失败：'+e.message; }
+}
+async function runNow(){ try{ const r = await api('/api/run',{method:'POST'}); alert(r.ok?'已启动一轮。':'未启动：'+(r.error||'')); refresh(); }catch(e){ alert('失败：'+e.message); } }
+refresh(); setInterval(refresh, 30000);
+</script>
+</body>
+</html>
