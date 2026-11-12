@@ -35,7 +35,7 @@ from app import converter as converter_mod
 from app.config import Config
 from app.dialer import fill_backend_groups, inject_dialer
 from app.fetcher import FetchError, fetch_subscription, fetch_text, make_client
-from app.merge import merge_proxies, sort_by_purity
+from app.merge import merge_proxies, prefix_purity_names, sort_by_purity
 from app.notify import failure_text, send_wechat, success_text
 from app.purity import MihomoChecker
 
@@ -137,6 +137,10 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                 1 for r in purity.values()
                 if r.get("measured") and r.get("match") is False)
             ordered = sort_by_purity(merged, purity)
+            # Display names carry the measured purity score, e.g.
+            # "5%-日本02 三网高速"; unmeasured nodes keep their name.
+            ordered, nstats = prefix_purity_names(ordered, purity)
+            report.update(nstats)
 
             step = "convert"
             ini_text = await fetch_text(cfg.ini_url, client)

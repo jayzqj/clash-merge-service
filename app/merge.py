@@ -12,6 +12,13 @@ is not enough (vless nodes on a shared IP differ only in
 Renaming: only ever appends a suffix to resolve a name clash; it
 never rewrites the original name, so grouping keywords (静态, 家宽,
 IEPL, country/region names, racknerd) are always preserved.
+``prefix_purity_names`` additionally prepends the measured purity
+score (``"{score}%-{name}"``) after the purity round; the prefix is
+only a display prefix — every grouping regex in the ini searches
+the name (``.*`` / substring match), so a leading ``"5%-"`` cannot
+break group matching. Unmeasured nodes keep their original name
+(no score to show); final names are de-duplicated again in case
+two same-name nodes share one score.
 """
 from __future__ import annotations
 
@@ -102,3 +109,34 @@ def sort_by_purity(proxies: list[dict], purity: dict) -> list[dict]:
             return (0, rec["score"], idx)
         return (1, 0, idx)
     return [p for _i, p in sorted(enumerate(proxies), key=sort_key)]
+
+
+def prefix_purity_names(proxies: list[dict], purity: dict) -> tuple[list[dict], dict]:
+    """Prepend the measured purity score to each node's display name:
+    ``"日本02 三网高速"`` with fraudScore 5 becomes
+    ``"5%-日本02 三网高速"``. Unmeasured nodes keep their original
+    name (there is no score to show). Must run AFTER the purity
+    round (records are keyed by the pre-rename identity) and BEFORE
+    conversion, so grouping and dialer-proxy injection see the final
+    names. Final names are made unique: two same-name nodes with the
+    same score get a ``" (n)"`` suffix on the later one.
+    """
+    stats = {"purity_prefixed": 0, "unmeasured_kept": 0}
+    seen_names: dict[str, int] = {}
+    out: list[dict] = []
+    for p in proxies:
+        node = copy.deepcopy(p)
+        rec = purity.get(dedup_key(p))
+        if rec and rec.get("measured") and rec.get("score") is not None:
+            node["name"] = f"{int(rec['score'])}%-{node.get('name', '')}"
+            stats["purity_prefixed"] += 1
+        else:
+            stats["unmeasured_kept"] += 1
+        name = str(node.get("name", ""))
+        if name in seen_names:
+            seen_names[name] += 1
+            node["name"] = f"{name} ({seen_names[name]})"
+        else:
+            seen_names[name] = 1
+        out.append(node)
+    return out, stats
