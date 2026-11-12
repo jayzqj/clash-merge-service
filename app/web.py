@@ -3,10 +3,10 @@
 Auth: HTTP Basic. Username defaults to ``jayzqj`` (env ADMIN_USER);
 password comes ONLY from env ADMIN_PASSWORD or a file named by
 ADMIN_PASSWORD_FILE — never from the repo, never from config.json.
-If no password is configured the admin routes fail closed (503).
-The API never returns real subscription URLs or the webhook value:
-see ``Config.public_view`` (masked URLs, webhook shown only as
-"set"/empty).
+The API returns full subscription URLs (including tokens) to the
+logged-in admin — the user asked for this on 2026-11-12; the page
+is login-protected, so only the admin sees them. The webhook value
+is still never echoed: see ``Config.public_view``.
 
 Static output (jay_filtered.yaml) is NOT served by this app — nginx
 serves it as a static file. This app only serves /admin and /api/*.

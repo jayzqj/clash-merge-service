@@ -164,12 +164,16 @@ class Config:
         return errors
 
     def public_view(self) -> dict:
-        """Config safe to return from the admin API: secrets masked."""
+        """Config as returned from the admin API (login required).
+
+        Subscription URLs are shown IN FULL, including tokens, because
+        the user asked for it (2026-11-12): the admin page is only
+        reachable after HTTP Basic login as the admin user, so the
+        full addresses are only visible to the admin. The Enterprise
+        WeChat webhook is still never echoed (shown only as "set"/"").
+        """
         view = copy.deepcopy(self.data)
         view["wechat_webhook"] = mask_webhook(view.get("wechat_webhook", ""))
-        for s in view.get("subscriptions", []):
-            s["url_masked"] = mask_url(s.get("url", ""))
-            s.pop("url", None)
         return view
 
     def new_subscription_id(self) -> str:

@@ -26,7 +26,7 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 <button onclick="refresh()">刷新状态</button></div>
 
 <div class="card"><h2>订阅源</h2>
-<table><thead><tr><th>ID</th><th>地址（已隐藏 token）</th><th>启用</th><th>操作</th></tr></thead>
+<table><thead><tr><th>ID</th><th>地址（完整显示，含 token）</th><th>启用</th><th>操作</th></tr></thead>
 <tbody id="subs"></tbody></table>
 <h3>新增订阅（只需填一个订阅 URL）</h3>
 <input type="text" id="newUrl" placeholder="https://…">
@@ -70,7 +70,7 @@ async function refresh(){
   document.getElementById('remote').checked = !!c.use_remote_subconverter;
   document.getElementById('mergedUrl').value = c.merged_public_url||'';
   document.getElementById('subs').innerHTML = (c.subscriptions||[]).map(s=>
-    '<tr><td>'+s.id+'</td><td>'+(s.url_masked||'')+'</td><td>'+(s.enabled?'是':'否')+'</td>'+
+    '<tr><td>'+s.id+'</td><td>'+(s.url||'')+'</td><td>'+(s.enabled?'是':'否')+'</td>'+
     '<td><button onclick="toggleSub(\''+s.id+'\','+!s.enabled+')">'+(s.enabled?'停用':'启用')+'</button> '+
     '<button onclick="delSub(\''+s.id+'\')">删除</button></td></tr>').join('');
 }
