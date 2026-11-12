@@ -3,11 +3,17 @@
 Pipeline order (hard requirement):
 1. fetch all enabled subscriptions (validated YAML, >0 nodes)
 2. merge + dedup
-3. per-node purity check (no threshold, keep all)
-4. sort by purity (measured asc, unmeasured last in original order)
-5. apply the ini (local conversion; remote subconverter opt-in)
-6. inject dialer-proxy AFTER conversion, fill backend groups
-7. atomically replace the output file — ONLY on full success.
+3. pre-filter by the ini's exclude_remarks (nodes the converter
+   would drop anyway are never tested)
+4. per-node purity check (no threshold, keep all)
+5. availability: nodes failing 3 rounds in a row are omitted from
+   the output (still tested next round; back the moment they
+   measure again)
+6. sort by purity (measured asc, unmeasured last in original order)
+   and prefix names with the measured score
+7. apply the ini (local conversion; remote subconverter opt-in)
+8. inject dialer-proxy AFTER conversion, fill backend groups
+9. atomically replace the output file — ONLY on full success.
    Any failure keeps the last good file and records step + reason.
 
 Scheduler: internal asyncio loop, no cron. A threading lock makes
@@ -33,7 +39,9 @@ from pathlib import Path
 import yaml
 
 from app import converter as converter_mod
+from app.availability import load_availability, update_availability
 from app.config import Config
+from app.converter import apply_exclude, parse_ini
 from app.dialer import fill_backend_groups, inject_dialer
 from app.fetcher import FetchError, fetch_subscription, fetch_text, make_client
 from app.merge import merge_proxies, prefix_purity_names, sort_by_purity
@@ -128,24 +136,48 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             merged, mstats = merge_proxies(fetched)
             report.update(mstats)
 
+            step = "prefilter"
+            # Fetch the ini early: its exclude_remarks decides which
+            # nodes are worth testing at all. Same matching as the
+            # converter (apply_exclude, re.search on the name), so a
+            # node dropped here is one the converter would drop
+            # later anyway — with the current ini (no ^ anchors) the
+            # two agree exactly. The converter still runs its own
+            # apply_exclude as a safety net.
+            ini_text = await fetch_text(cfg.ini_url, client)
+            ini = parse_ini(ini_text)
+            to_test, pre_excluded = apply_exclude(merged, ini)
+            report["prefilter_excluded"] = pre_excluded
+            log.info("prefilter: %d nodes in, %d excluded by "
+                     "exclude_remarks, %d to test",
+                     len(merged), pre_excluded, len(to_test))
+
             step = "purity"
             report["purity_workers"] = cfg.purity_workers
             checker = MihomoChecker(cfg)
-            purity = await asyncio.to_thread(checker.check_all, merged)
+            purity = await asyncio.to_thread(checker.check_all, to_test)
             measured = sum(1 for r in purity.values() if r.get("measured"))
             report["purity_measured"] = measured
-            report["purity_unmeasured"] = len(merged) - measured
+            report["purity_unmeasured"] = len(to_test) - measured
             report["purity_mismatched_exit_ip"] = sum(
                 1 for r in purity.values()
                 if r.get("measured") and r.get("match") is False)
-            ordered = sort_by_purity(merged, purity)
+
+            step = "availability"
+            # Nodes that failed 3 rounds in a row are omitted from
+            # this round's output (they are still tested next round
+            # and come back the moment they measure again).
+            records = load_availability(cfg)
+            kept, astats = update_availability(cfg, records, to_test, purity)
+            report.update(astats)
+
+            ordered = sort_by_purity(kept, purity)
             # Display names carry the measured purity score, e.g.
             # "5%-日本02 三网高速"; unmeasured nodes keep their name.
             ordered, nstats = prefix_purity_names(ordered, purity)
             report.update(nstats)
 
             step = "convert"
-            ini_text = await fetch_text(cfg.ini_url, client)
             if cfg.data.get("use_remote_subconverter"):
                 merged_yaml = yaml.safe_dump(
                     {"proxies": ordered}, allow_unicode=True, sort_keys=False)

@@ -51,6 +51,14 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 
 <div class="card"><h2>上次执行结果</h2><div class="mono" id="lastRun">—</div></div>
 
+<div class="card"><h2>节点可用性记录</h2>
+<p style="font-size:13px;color:#555">连续 3 次检测不可用（测不到）的节点不会出现在订阅里，但每轮仍会测试，下次测到可用时自动恢复。清空记录后，所有节点重新开始计数。</p>
+<div class="mono" id="availText">加载中…</div>
+<table><thead><tr><th>节点</th><th>连续失败</th><th>最后检测</th></tr></thead>
+<tbody id="omitted"></tbody></table>
+<button onclick="clearAvail()">清空记录</button>
+<div id="availMsg"></div></div>
+
 <script>
 async function api(path, opts){
   const r = await fetch(path, Object.assign({credentials:'include'}, opts||{}));
@@ -80,7 +88,16 @@ async function refresh(){
     '<tr><td>'+s.id+'</td><td>'+(s.url||'')+'</td><td>'+(s.enabled?'是':'否')+'</td>'+
     '<td><button onclick="toggleSub(\''+s.id+'\','+!s.enabled+')">'+(s.enabled?'停用':'启用')+'</button> '+
     '<button onclick="delSub(\''+s.id+'\')">删除</button></td></tr>').join('');
+  const a = await api('/api/availability');
+  document.getElementById('availText').textContent =
+    '已记录节点：'+a.tracked+' 个，其中当前不输出：'+(a.omitted||[]).length+' 个';
+  document.getElementById('omitted').innerHTML = (a.omitted||[]).map(o=>
+    '<tr><td>'+o.name+'</td><td>'+o.fails+'</td><td>'+(o.last_seen||'')+'</td></tr>').join('');
 }
+async function clearAvail(){ if(!confirm('清空全部可用性记录？当前不输出的节点将在下一轮重新开始计数。')) return;
+  try{ const r = await api('/api/availability/clear',{method:'POST'});
+    document.getElementById('availMsg').textContent='已清空 '+r.cleared+' 条记录。'; refresh();
+  }catch(e){ document.getElementById('availMsg').textContent='失败：'+e.message; } }
 async function addSub(){
   const url = document.getElementById('newUrl').value.trim();
   if(!url) return;

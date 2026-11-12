@@ -8,6 +8,7 @@ config.json
 !requirements.yaml
 data/
 state.json
+availability.json
 # Python
 __pycache__/
 *.pyc

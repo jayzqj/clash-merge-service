@@ -223,6 +223,25 @@ async def api_run_now(_user: str = Depends(_check_auth)):
     return {"ok": True, "run_started": True}
 
 
+@app.get("/api/availability")
+async def api_availability(_user: str = Depends(_check_auth)):
+    """Availability records: how many nodes are tracked, and which
+    are currently omitted (3 consecutive failed rounds). Names only,
+    no credentials."""
+    from app.availability import load_availability, omitted_nodes
+    records = load_availability(_cfg())
+    return {"tracked": len(records), "omitted": omitted_nodes(records)}
+
+
+@app.post("/api/availability/clear")
+async def api_clear_availability(_user: str = Depends(_check_auth)):
+    """Clear all availability records. Omitted nodes come back into
+    the next round's output (and start counting failures from 0).
+    Does NOT trigger a run."""
+    from app.availability import clear_availability
+    return {"ok": True, "cleared": clear_availability(_cfg())}
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
