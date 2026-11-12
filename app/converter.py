@@ -245,13 +245,20 @@ def build_rules(ini: IniData) -> tuple[list[dict], list[str]]:
             }
             rules.append(f"RULE-SET,{key},{rs.group}")
         elif rs.kind == "geosite":
-            rules.append(f"GEO-SITE,{rs.arg},{rs.group}")
+            # Mihomo calls this rule type GEOSITE (no hyphen); the
+            # Clash Premium / subconverter spelling GEO-SITE is rejected
+            # by Mihomo ("unsupported rule type: GEO-SITE") and fails the
+            # whole subscription on Clash Verge. Same for GEO-IP below.
+            rules.append(f"GEOSITE,{rs.arg},{rs.group}")
         elif rs.kind == "geoip":
             suffix = ",no-resolve" if rs.no_resolve else ""
-            rules.append(f"GEO-IP,{rs.arg},{rs.group}{suffix}")
+            rules.append(f"GEOIP,{rs.arg},{rs.group}{suffix}")
         elif rs.kind == "final":
-            rules.append(f"FINAL,{rs.group}")
-    if not any(r.startswith("FINAL,") for r in rules):
+            # Mihomo has no FINAL rule type (that is Clash Premium
+            # spelling); its catch-all is MATCH. Emitting FINAL makes
+            # mihomo fail the whole config ("format invalid").
+            rules.append(f"MATCH,{rs.group}")
+    if not any(r.startswith(("FINAL,", "MATCH,")) for r in rules):
         rules.append("MATCH,🚀 手动选择")
     return providers, rules
 
@@ -278,6 +285,32 @@ async def fetch_base(client: httpx.AsyncClient, ini: IniData) -> dict:
     return dict(FALLBACK_BASE)
 
 
+def normalize_rule_types(doc: dict) -> dict:
+    """Rewrite Clash Premium rule spellings to Mihomo spellings in
+    ``doc["rules"]`` (GEO-SITE -> GEOSITE, GEO-IP -> GEOIP, FINAL ->
+    MATCH). Covers rules from build_rules() and any rules copied from
+    the base template when rule generation is off. Anything else is
+    left untouched."""
+    rules = doc.get("rules") or []
+    fixed: list[str] = []
+    for r in rules:
+        if not isinstance(r, str):
+            fixed.append(r)
+            continue
+        head, sep, rest = r.partition(",")
+        upper = head.strip().upper()
+        if upper == "GEO-SITE":
+            fixed.append(f"GEOSITE,{rest}" if sep else "GEOSITE")
+        elif upper == "GEO-IP":
+            fixed.append(f"GEOIP,{rest}" if sep else "GEOIP")
+        elif upper == "FINAL":
+            fixed.append(f"MATCH,{rest}" if sep else "MATCH")
+        else:
+            fixed.append(r)
+    doc["rules"] = fixed
+    return doc
+
+
 async def convert(proxies: list[dict], ini_text: str,
                   client: httpx.AsyncClient) -> tuple[dict, dict]:
     """Apply the ini to a proxy list; returns (clash_doc, stats)."""
@@ -294,6 +327,7 @@ async def convert(proxies: list[dict], ini_text: str,
         doc["rule-providers"] = providers
     if ini.enable_rule_generator or ini.overwrite_original_rules:
         doc["rules"] = rules
+    normalize_rule_types(doc)
     stats = {"proxies_in": len(proxies), "excluded_by_ini": excluded,
              "proxies_out": len(kept), "groups": len(doc["proxy-groups"]),
              "rules": len(rules), "rule_providers": len(providers)}
@@ -321,4 +355,6 @@ async def remote_convert(merged_yaml_text: str, ini_url: str,
     doc = yaml.safe_load(resp.text)
     if not isinstance(doc, dict) or not doc.get("proxies"):
         raise FetchError("convert", "subconverter returned no proxies")
-    return doc
+    # The remote service emits Clash Premium spellings (GEO-SITE /
+    # GEO-IP); Mihomo rejects those, so normalize before returning.
+    return normalize_rule_types(doc)

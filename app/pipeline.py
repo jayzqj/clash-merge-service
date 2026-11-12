@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -168,6 +169,32 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             tmp.write_text(yaml.safe_dump(doc, allow_unicode=True,
                                           sort_keys=False, width=100000),
                            encoding="utf-8")
+
+            # Validate the new file with mihomo before publishing it:
+            # a config Clash Verge rejects (e.g. an unsupported rule
+            # type) must never overwrite the last good file. If the
+            # binary is missing entirely, warn and skip validation
+            # rather than blocking the run.
+            step = "validate"
+            mihomo_bin = cfg.data.get("mihomo_bin") or "mihomo"
+            workdir = cfg.data.get("mihomo_workdir") or "/opt/clash-merge-service/mihomo"
+
+            def _validate() -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [mihomo_bin, "-t", "-f", str(tmp), "-d", workdir],
+                    capture_output=True, text=True, timeout=120)
+
+            try:
+                res = await asyncio.to_thread(_validate)
+            except FileNotFoundError:
+                log.warning("pipeline: mihomo binary %r not found, "
+                            "skipping -t validation", mihomo_bin)
+            else:
+                if res.returncode != 0:
+                    tail = ((res.stderr or "") + (res.stdout or ""))[-500:]
+                    raise FetchError("validate",
+                                     f"mihomo -t failed: {tail.strip()}")
+                log.info("pipeline: mihomo -t passed for new output")
             os.replace(tmp, out_path)
             report["output_path"] = str(out_path)
 
