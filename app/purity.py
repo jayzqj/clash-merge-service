@@ -76,6 +76,15 @@ def build_mihomo_config(proxies: list[dict], front_name: str | None,
             if str(node.get("type", "")).lower() not in ("hysteria2", "tuic", "wireguard"):
                 node["dialer-proxy"] = front_name
         cfg_proxies.append(node)
+    # NOTE: the rule MUST send traffic through the selector group.
+    # An earlier version used ["MATCH,DIRECT"] here, which silently
+    # routed every check straight out of the VPS: the PUT that
+    # selects a node then had no effect at all, every node measured
+    # the VPS egress IP (fraudScore 49 for all 323 nodes in the
+    # 2026-11-12 22:20 run), and most exit IPs "mismatched". With
+    # MATCH,<selector-group> the info request goes through the node
+    # currently selected in MERGE-CHECK (backend TCP nodes ride the
+    # front via their dialer-proxy, as set above).
     return {
         "mixed-port": mixed_port,
         "external-controller": f"127.0.0.1:{controller_port}",
@@ -86,7 +95,7 @@ def build_mihomo_config(proxies: list[dict], front_name: str | None,
             {"name": SELECTOR_GROUP, "type": "select",
              "proxies": [str(p["name"]) for p in proxies]},
         ],
-        "rules": ["MATCH,DIRECT"],
+        "rules": [f"MATCH,{SELECTOR_GROUP}"],
     }
 
 
