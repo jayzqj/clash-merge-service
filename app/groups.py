@@ -4,9 +4,9 @@ directly selectable), as a url-test group.
 
 The group is NOT defined in the ini — its membership depends on the
 measured scores, which the ini cannot see. It is built after
-conversion, inserted right after ``🚀 手动选择``, and added as a
-member to ``🚀 手动选择`` and ``🤖 国外AI`` so it shows up as a
-selectable option in both.
+conversion, inserted right after ``🤖 国外AI`` (user's choice,
+2026-11-13), and added as a member to ``🚀 手动选择`` and
+``🤖 国外AI`` so it shows up as a selectable option in both.
 
 The same builder serves the full run (scores from the purity round)
 and re-apply (scores parsed back out of the display names with
@@ -52,10 +52,10 @@ def scores_from_names(proxies: list[dict]) -> dict[str, int | None]:
 
 def add_low_purity_group(doc: dict, proxies: list[dict],
                          scores_by_name: dict[str, int | None]) -> dict:
-    """Build the group, insert it into doc["proxy-groups"] after
-    ``🚀 手动选择`` (appended at the end if that group is missing),
-    and add its name to each parent group's member list. Returns
-    stats for the run report."""
+    """Build the group, insert it into doc["proxy-groups"] right
+    after ``🤖 国外AI`` (after ``🚀 手动选择`` if 国外AI is missing,
+    appended at the end if neither exists), and add its name to each
+    parent group's member list. Returns stats for the run report."""
     members = low_purity_members(proxies, scores_by_name)
     group: dict = {"name": GROUP_NAME, "type": "url-test",
                    "proxies": members if members else ["REJECT"],
@@ -64,8 +64,13 @@ def add_low_purity_group(doc: dict, proxies: list[dict],
     groups = doc.setdefault("proxy-groups", [])
     names = [str(g.get("name", "")) for g in groups]
     if GROUP_NAME in names:
-        groups[names.index(GROUP_NAME)] = group
-        log.info("low-purity group replaced in place")
+        # Drop the old entry first so a re-insert also moves it
+        # when the anchor changed (e.g. after 🚀 手动选择 -> after
+        # 🤖 国外AI), instead of replacing it in place.
+        groups.pop(names.index(GROUP_NAME))
+        names = [str(g.get("name", "")) for g in groups]
+    if "🤖 国外AI" in names:
+        groups.insert(names.index("🤖 国外AI") + 1, group)
     elif "🚀 手动选择" in names:
         groups.insert(names.index("🚀 手动选择") + 1, group)
     else:

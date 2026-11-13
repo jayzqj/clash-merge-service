@@ -57,6 +57,21 @@ def is_udp(proxy: dict) -> bool:
     return str(proxy.get("type", "")).lower() in UDP_TYPES
 
 
+def strip_dialer(proxies: list[dict]) -> dict:
+    """Remove dialer-proxy from every proxy (dialer disabled: backends
+    stay direct, like the user's working 111.yaml). Returns counts in
+    the same shape as inject_dialer so reports stay comparable."""
+    stats = {"backend_total": 0, "backend_tcp_injected": 0,
+             "backend_udp_no_dialer": 0, "front_or_ordinary": 0}
+    for p in proxies:
+        if is_backend(p):
+            stats["backend_total"] += 1
+        else:
+            stats["front_or_ordinary"] += 1
+        p.pop("dialer-proxy", None)
+    return stats
+
+
 def inject_dialer(proxies: list[dict], front_group: str = FRONT_GROUP) -> dict:
     """Mutate proxy dicts in place. Returns counts."""
     stats = {"backend_total": 0, "backend_tcp_injected": 0,
