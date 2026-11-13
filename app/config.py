@@ -50,12 +50,12 @@ DEFAULTS: dict = {
     "min_interval_seconds": 300,
 }
 
-# The dialer-proxy target group name. Must match the ini exactly:
-# emoji U+1F6AA + one space + "ISP链式前置分组" (no spaces inside).
+# The dialer-proxy target group name — FALLBACK only. The ini
+# governs the real name (see app/dialer.py::front_group_from_ini):
+# the pipeline takes the ini's (single) 前置 group, so renaming it
+# on gist just works. This constant is used only when the ini has
+# zero or several 前置 groups.
 FRONT_GROUP = "🚪 ISP链式前置分组"
-# Groups that the ini leaves as a REJECT placeholder and this service
-# fills with the backend (静态) node names after conversion.
-BACKEND_GROUPS = ["🎯 ISP链式后置分组", "🎯 链式代理后置分组"]
 
 # Node-name keywords that group matching depends on. Renaming must
 # preserve them (see app/merge.py).

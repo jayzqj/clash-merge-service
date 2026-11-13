@@ -52,7 +52,8 @@ from app import converter as converter_mod
 from app.availability import load_availability, update_availability
 from app.config import Config
 from app.converter import apply_exclude, parse_ini
-from app.dialer import fill_backend_groups, inject_dialer
+from app.dialer import (fill_backend_groups, front_group_from_ini,
+                        inject_dialer)
 from app.groups import add_low_purity_group, scores_from_names
 from app.merge import dedup_key
 from app.names import normalize_name
@@ -198,7 +199,10 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
         report.update(cstats)
 
         step = "dialer-proxy"
-        report.update(inject_dialer(doc["proxies"]))
+        ini = parse_ini(ini_text)
+        front_group = front_group_from_ini(ini)
+        report["dialer_front_group"] = front_group
+        report.update(inject_dialer(doc["proxies"], front_group))
         report["backend_groups_filled"] = fill_backend_groups(
             doc, doc["proxies"])
 
@@ -339,7 +343,11 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             report.update(cstats)
 
             step = "dialer-proxy"
-            dstats = inject_dialer(doc["proxies"])
+            # The front group name comes from the ini (see
+            # front_group_from_ini) so renaming it on gist just works.
+            front_group = front_group_from_ini(ini)
+            report["dialer_front_group"] = front_group
+            dstats = inject_dialer(doc["proxies"], front_group)
             report.update(dstats)
             filled = fill_backend_groups(doc, doc["proxies"])
             report["backend_groups_filled"] = filled
