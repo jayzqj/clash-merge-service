@@ -240,6 +240,13 @@ def build_rules(ini: IniData) -> tuple[list[dict], list[str]]:
             counter += 1
             providers[key] = {
                 "type": "http", "behavior": "classical",
+                # The lists are plain-text (one rule per line). Without
+                # this, Mihomo parses the file as YAML by default and
+                # silently loads 0 rules — every RULE-SET then matches
+                # nothing and traffic falls through to MATCH (this is
+                # why chatgpt.com went to 🚀 手动选择 instead of
+                # 🤖 国外AI: it is only in the ACL AI.list, provider-1).
+                "format": "text",
                 "url": rs.url, "path": f"./rules/{key}.list",
                 "interval": rs.interval,
             }
