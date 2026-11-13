@@ -1,7 +1,11 @@
 """Pipeline + scheduler + run state.
 
 Pipeline order (hard requirement):
-1. fetch all enabled subscriptions (validated YAML, >0 nodes)
+1. fetch all enabled subscriptions (validated YAML, >0 nodes).
+   A single failed source is SKIPPED (recorded in the report as
+   ``sources_failed`` with its URL + reason) and the run continues
+   with the rest; the run fails only if ALL sources fail. The ini
+   fetch below is still fail-fast — the run cannot convert without it.
 2. merge + dedup
 3. pre-filter by the ini's exclude_remarks (nodes the converter
    would drop anyway are never tested)
@@ -257,11 +261,28 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             raise FetchError("fetch", "no enabled subscriptions in config")
         async with make_client(timeout=60) as client:
             fetched: list[tuple[str, list[dict]]] = []
+            failed: list[dict] = []
             for s in subs:
-                proxies = await fetch_subscription(s["url"], client)
+                try:
+                    proxies = await fetch_subscription(s["url"], client)
+                except FetchError as e:
+                    # Per-source tolerance: skip this source, keep going
+                    # with the rest. The URL + reason go into the report
+                    # (admin page shows them; the WeChat notification
+                    # only ever shows the counts, never the address).
+                    failed.append({"url": s["url"], "error": e.reason})
+                    log.warning("fetch: source %s (%s) failed, skipping: %s",
+                                s.get("id"), s["url"], e.reason)
+                    continue
                 fetched.append((s.get("id", "?"), proxies))
                 log.info("fetch: %s -> %d nodes", s.get("id"), len(proxies))
             report["sources_ok"] = len(fetched)
+            report["sources_failed"] = failed
+            if not fetched:
+                raise FetchError(
+                    "fetch",
+                    "all %d subscription sources failed: %s"
+                    % (len(subs), "; ".join(f["error"] for f in failed)))
 
             step = "merge"
             merged, mstats = merge_proxies(fetched)

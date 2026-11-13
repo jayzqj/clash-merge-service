@@ -4,9 +4,15 @@ Validation is deliberately stricter than "HTTP 200": a known failure
 mode (2026-11-11) is a provider returning HTTP 400 with the plain-text
 body ``Subscription source #10 could not be fetched or contains no
 valid node info.`` — and in general any non-YAML / empty response must
-not be treated as a subscription. A failed source must fail the whole
-run (and keep the last good output file), never silently produce a
-partial merge.
+not be treated as a subscription.
+
+Per-source tolerance (user's decision 2026-11-13, after one source
+returned HTTP 502 and another "No nodes were found!"): a failed
+source is SKIPPED and the run continues with the remaining sources;
+only when ALL sources fail does the run fail (and keep the last good
+output file). The pipeline records each skipped source (URL + reason)
+in the run report as ``sources_failed`` — shown on the admin page,
+never in the WeChat notification.
 """
 from __future__ import annotations
 

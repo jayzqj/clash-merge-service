@@ -53,6 +53,10 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 
 <div class="card"><h2>上次执行结果</h2><div class="mono" id="lastRun">—</div></div>
 
+<div class="card"><h2>末轮失败的订阅源</h2>
+<p style="font-size:13px;color:#555">最近一轮执行中拉取失败的订阅地址（已跳过，用其余源继续跑）。地址完整显示，含 token，仅登录后可见；企业微信通知里只显示成功/总数，不含地址。</p>
+<div class="mono" id="failedSubs">—</div></div>
+
 <div class="card"><h2>过滤规则（只读，来自 ini）</h2>
 <p style="font-size:13px;color:#555">exclude_remarks：名字里出现这些词的节点，在测试之前就被排除，不参与检测。</p>
 <div class="mono" id="excludeText">加载中…</div>
@@ -78,6 +82,13 @@ async function refresh(){
   document.getElementById('statusText').textContent =
     '运行中：'+s.running+'\n下次执行：'+(s.next_run||'—')+'\n累计启动：'+s.runs_started+' 轮，重叠跳过：'+s.runs_skipped_overlap+' 次\n'+(s.last_error?'最近错误：'+s.last_error:'');
   document.getElementById('lastRun').textContent = s.last_run ? JSON.stringify(s.last_run,null,2) : '—';
+  const lr = s.last_run || {};
+  const f = lr.sources_failed;
+  document.getElementById('failedSubs').textContent =
+    !lr.started_at ? '—' :
+    (f === undefined ? '本轮未拉取订阅源（重新应用规则不拉取订阅）。' :
+     f.length ? ('时间：'+(lr.finished_at||lr.started_at)+'\n'+f.map(x=>'地址：'+x.url+'\n原因：'+x.error).join('\n\n')) :
+     '末轮没有失败的订阅源。');
   const c = await api('/api/config');
   document.getElementById('interval').value = c.interval_seconds;
   document.getElementById('notify').value = String(c.notify_enabled);

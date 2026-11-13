@@ -76,6 +76,11 @@ webhook（只显示是否已设置）。
 1. 拉取全部已启用的订阅源；响应必须确实是可解析的 Clash YAML 且节点数 > 0，
    不能只看 HTTP 200（已知故障：某订阅曾返回 HTTP 400 纯文本
    `Subscription source #10 could not be fetched…`）。
+   单个源失败（HTTP 错误、空订阅、解析失败）只跳过该源，用其余源继续跑，
+   失败的源（地址 + 原因）记进本轮报告的 `sources_failed`；只有全部源都
+   失败时整轮才失败。成功通知里显示订阅源成功/总数（如 3/4），并提示有源
+   失败、地址见管理页（通知里从不出现订阅地址）；管理页有“末轮失败的订阅源”
+   一栏，显示失败地址和原因。
 2. 合并 + 去重。去重键 = 除名字外的全部连接字段（server、port、密码/UUID、
    `servername`/`sni`、`ws-opts` 的 path/Host 等身份字段的组合；实现见
    `app/merge.py::dedup_key`）。**不能**只按 server+port 去重，也不能只按

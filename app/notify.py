@@ -49,9 +49,18 @@ async def send_wechat(webhook: str, content: str) -> bool:
 
 
 def success_text(report: dict) -> str:
+    ok = int(report.get('sources_ok', 0) or 0)
+    total = int(report.get('sources_total', 0) or 0)
+    partial = ""
+    if total and ok < total:
+        # Counts only — the failed addresses are on the admin page,
+        # never in a WeChat message.
+        partial = (f"注意：有 {total - ok} 个订阅源失败，已跳过，"
+                   "失败地址见管理页\n")
     return (
         "Clash 合并订阅：本次执行成功\n"
-        f"订阅源：{report.get('sources_ok', 0)}/{report.get('sources_total', 0)} 个成功\n"
+        f"订阅源：{ok}/{total} 个成功\n"
+        f"{partial}"
         f"节点：合并 {report.get('total_in', 0)} 个，去重 {report.get('dedup_removed', 0)} 个，"
         f"最终 {report.get('proxies_out', 0)} 个\n"
         f"纯净度：已测 {report.get('purity_measured', 0)} 个，未测 {report.get('purity_unmeasured', 0)} 个\n"
