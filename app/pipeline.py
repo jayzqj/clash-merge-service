@@ -53,7 +53,7 @@ from app.availability import load_availability, update_availability
 from app.config import Config
 from app.converter import apply_exclude, parse_ini
 from app.dialer import (fill_backend_groups, front_group_from_ini,
-                        inject_dialer, strip_dialer)
+                        inject_dialer)
 from app.groups import add_low_purity_group, scores_from_names
 from app.merge import dedup_key
 from app.names import normalize_name
@@ -200,17 +200,9 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
 
         step = "dialer-proxy"
         ini = parse_ini(ini_text)
-        if cfg.dialer_enabled:
-            front_group = front_group_from_ini(ini)
-            report["dialer_front_group"] = front_group
-            report.update(inject_dialer(doc["proxies"], front_group))
-        else:
-            # Dialer off (user's working 111.yaml has 0 dialer-proxy):
-            # strip any dialer-proxy the published file still carries
-            # so a reapply alone regenerates a direct file.
-            report["dialer_front_group"] = None
-            report["dialer_enabled"] = False
-            report.update(strip_dialer(doc["proxies"]))
+        front_group = front_group_from_ini(ini)
+        report["dialer_front_group"] = front_group
+        report.update(inject_dialer(doc["proxies"], front_group))
         report["backend_groups_filled"] = fill_backend_groups(
             doc, doc["proxies"])
 
@@ -353,14 +345,9 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             step = "dialer-proxy"
             # The front group name comes from the ini (see
             # front_group_from_ini) so renaming it on gist just works.
-            if cfg.dialer_enabled:
-                front_group = front_group_from_ini(ini)
-                report["dialer_front_group"] = front_group
-                dstats = inject_dialer(doc["proxies"], front_group)
-            else:
-                report["dialer_front_group"] = None
-                report["dialer_enabled"] = False
-                dstats = strip_dialer(doc["proxies"])
+            front_group = front_group_from_ini(ini)
+            report["dialer_front_group"] = front_group
+            dstats = inject_dialer(doc["proxies"], front_group)
             report.update(dstats)
             filled = fill_backend_groups(doc, doc["proxies"])
             report["backend_groups_filled"] = filled

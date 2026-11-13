@@ -34,14 +34,6 @@ DEFAULTS: dict = {
     "purity_enabled": True,
     "purity_info_url": "https://my.123169.xyz/v1/info",
     "purity_workers": 1,
-    # Whether the published file injects dialer-proxy on backend
-    # (静态) nodes. True = chain via the ini's 前置 group (current
-    # behaviour). False = statics stay direct, exactly like the
-    # user's working 111.yaml (0 dialer-proxy). Config-file only,
-    # like check_front — never edited on /admin. When False, the
-    # pipeline strips any dialer-proxy left on proxies (a reapply
-    # alone then suffices; no full purity re-run is needed).
-    "dialer_enabled": True,
     # Dedicated front for backend (静态) purity checks: a full proxy
     # dict (same shape as one entry of a subscription's "proxies").
     # The Bright Data gateway rejects airport-front exit IPs, so
@@ -183,10 +175,6 @@ class Config:
     def check_front(self) -> dict | None:
         front = self.data.get("check_front")
         return front if isinstance(front, dict) else None
-
-    @property
-    def dialer_enabled(self) -> bool:
-        return bool(self.data.get("dialer_enabled", True))
 
     # -- validation -----------------------------------------------------
     def validate(self) -> list[str]:
