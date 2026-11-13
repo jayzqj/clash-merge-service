@@ -23,6 +23,8 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 
 <div class="card" id="status"><h2>运行状态</h2><div class="mono" id="statusText">加载中…</div>
 <button onclick="runNow()">立即执行一次</button>
+<button onclick="reapply()">重新应用规则</button>
+<div id="reapplyMsg" style="font-size:13px;color:#555;margin-top:6px">重新应用规则：用最新的 ini 重新算分组和规则，不重新测纯净度（几秒完成）。只对当前订阅文件里的节点生效；被预过滤或连续失败隐藏的节点，要等下一轮完整执行才会回来；节点名也不改，下一轮完整执行时统一。</div>
 <button onclick="refresh()">刷新状态</button></div>
 
 <div class="card"><h2>订阅源</h2>
@@ -50,6 +52,12 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 <div id="setMsg"></div></div>
 
 <div class="card"><h2>上次执行结果</h2><div class="mono" id="lastRun">—</div></div>
+
+<div class="card"><h2>过滤规则（只读，来自 ini）</h2>
+<p style="font-size:13px;color:#555">exclude_remarks：名字里出现这些词的节点，在测试之前就被排除，不参与检测。</p>
+<div class="mono" id="excludeText">加载中…</div>
+<table><thead><tr><th>上轮被过滤的节点</th></tr></thead>
+<tbody id="excludedNames"></tbody></table></div>
 
 <div class="card"><h2>节点可用性记录</h2>
 <p style="font-size:13px;color:#555">连续 3 次检测不可用（测不到）的节点不会出现在订阅里，但每轮仍会测试，下次测到可用时自动恢复。清空记录后，所有节点重新开始计数。</p>
@@ -93,6 +101,17 @@ async function refresh(){
     '已记录节点：'+a.tracked+' 个，其中当前不输出：'+(a.omitted||[]).length+' 个';
   document.getElementById('omitted').innerHTML = (a.omitted||[]).map(o=>
     '<tr><td>'+o.name+'</td><td>'+o.fails+'</td><td>'+(o.last_seen||'')+'</td></tr>').join('');
+  try{
+    const ini = await api('/api/ini');
+    if(ini.ok){
+      document.getElementById('excludeText').textContent = ini.exclude_remarks||'（ini 里没有 exclude_remarks）';
+      document.getElementById('excludedNames').innerHTML = (ini.prefilter_excluded_names||[]).map(n=>
+        '<tr><td>'+n+'</td></tr>').join('') ||
+        '<tr><td>上轮没有过滤掉节点（'+(ini.prefilter_excluded||0)+' 个）</td></tr>';
+    }else{
+      document.getElementById('excludeText').textContent = '获取 ini 失败：'+(ini.error||'');
+    }
+  }catch(e){ document.getElementById('excludeText').textContent = '获取 ini 失败：'+e.message; }
 }
 async function clearAvail(){ if(!confirm('清空全部可用性记录？当前不输出的节点将在下一轮重新开始计数。')) return;
   try{ const r = await api('/api/availability/clear',{method:'POST'});
@@ -126,6 +145,17 @@ async function saveSettings(){
   }catch(e){ document.getElementById('setMsg').textContent='保存失败：'+e.message; }
 }
 async function runNow(){ try{ const r = await api('/api/run',{method:'POST'}); alert(r.ok?'已启动一轮。':'未启动：'+(r.error||'')); refresh(); }catch(e){ alert('失败：'+e.message); } }
+async function reapply(){ const m = document.getElementById('reapplyMsg');
+  m.textContent='正在重新应用规则…';
+  try{ const r = await api('/api/reapply',{method:'POST'});
+    if(!r.ok){ m.textContent='未启动：'+(r.error||''); return; }
+    for(let i=0;i<20;i++){ await new Promise(r=>setTimeout(r,1000));
+      const s = await api('/api/status');
+      if(!s.running){ const lr = s.last_run||{};
+        m.textContent = lr.ok ? ('已应用：'+(lr.proxies_out||'?')+' 个节点，低纯净分组 '+ (lr.low_purity_members||0) +' 个，用时 '+(lr.duration_seconds||'?')+' 秒。') : ('失败（'+(lr.failed_step||'')+'）：'+(lr.error||''));
+        refresh(); return; } }
+    m.textContent='还在执行，请稍后刷新页面查看结果。';
+  }catch(e){ m.textContent='失败：'+e.message; } }
 refresh(); setInterval(refresh, 30000);
 </script>
 </body>

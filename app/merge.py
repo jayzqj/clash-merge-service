@@ -114,12 +114,14 @@ def sort_by_purity(proxies: list[dict], purity: dict) -> list[dict]:
 def prefix_purity_names(proxies: list[dict], purity: dict) -> tuple[list[dict], dict]:
     """Prepend the measured purity score to each node's display name:
     ``"日本02 三网高速"`` with fraudScore 5 becomes
-    ``"5%-日本02 三网高速"``. Unmeasured nodes keep their original
-    name (there is no score to show). Must run AFTER the purity
-    round (records are keyed by the pre-rename identity) and BEFORE
-    conversion, so grouping and dialer-proxy injection see the final
-    names. Final names are made unique: two same-name nodes with the
-    same score get a ``" (n)"`` suffix on the later one.
+    ``"5% 🇹🇼 日本02 三网高速"`` (the base name is normalized by
+    ``names.normalize_name`` before this runs, so the flag and the
+    Chinese country name are already in place). Unmeasured nodes keep
+    their (normalized) name. Must run AFTER the purity round (records
+    are keyed by the pre-rename identity) and BEFORE conversion, so
+    grouping and dialer-proxy injection see the final names. Final
+    names are made unique: two same-name nodes with the same score
+    get a ``" (n)"`` suffix on the later one.
     """
     stats = {"purity_prefixed": 0, "unmeasured_kept": 0}
     seen_names: dict[str, int] = {}
@@ -128,7 +130,7 @@ def prefix_purity_names(proxies: list[dict], purity: dict) -> tuple[list[dict], 
         node = copy.deepcopy(p)
         rec = purity.get(dedup_key(p))
         if rec and rec.get("measured") and rec.get("score") is not None:
-            node["name"] = f"{int(rec['score'])}%-{node.get('name', '')}"
+            node["name"] = f"{int(rec['score'])}% {node.get('name', '')}"
             stats["purity_prefixed"] += 1
         else:
             stats["unmeasured_kept"] += 1

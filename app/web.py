@@ -223,6 +223,39 @@ async def api_run_now(_user: str = Depends(_check_auth)):
     return {"ok": True, "run_started": True}
 
 
+@app.post("/api/reapply")
+async def api_reapply(_user: str = Depends(_check_auth)):
+    """Re-apply the current ini to the current published file,
+    without re-testing purity. The result lands in /api/status
+    (last_run, kind="reapply")."""
+    from app.pipeline import reapply_rules
+    state = _state()
+    if state.running:
+        return {"ok": False, "error": "a round is already running"}
+    asyncio.create_task(reapply_rules(_cfg(), state))
+    return {"ok": True, "reapply_started": True}
+
+
+@app.get("/api/ini")
+async def api_ini(_user: str = Depends(_check_auth)):
+    """The live ini's exclude_remarks (read-only), fetched fresh
+    from gist, plus which nodes the last run filtered with it."""
+    from app.converter import parse_ini
+    from app.fetcher import fetch_text, make_client
+    try:
+        async with make_client(timeout=30) as client:
+            ini_text = await fetch_text(_cfg().ini_url, client)
+    except Exception as e:  # noqa: BLE001 - surfaced to the admin page
+        return {"ok": False, "error": str(e)[:300]}
+    ini = parse_ini(ini_text)
+    last = (_state().last_run or {})
+    return {"ok": True,
+            "exclude_remarks": ini.exclude_regex,
+            "prefilter_excluded": last.get("prefilter_excluded", 0),
+            "prefilter_excluded_names":
+                last.get("prefilter_excluded_names", [])}
+
+
 @app.get("/api/availability")
 async def api_availability(_user: str = Depends(_check_auth)):
     """Availability records: how many nodes are tracked, and which
