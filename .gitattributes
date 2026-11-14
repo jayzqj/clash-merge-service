@@ -1,0 +1,5 @@
+# Every text file is LF in the repository AND in the working copy, on
+# Windows too. The VPS runs these files as they are (shell script,
+# systemd unit), and "direct upload" deployment copies working-copy
+# files straight to the server, so CRLF must never reach it.
+* text=auto eol=lf
