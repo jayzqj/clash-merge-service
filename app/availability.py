@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -33,6 +34,12 @@ log = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
 FAIL_THRESHOLD = 3
 PRUNE_DAYS = 30
+# If more than this share of the attempted nodes failed in one round,
+# the round is treated as a checker/network problem (VPS egress down,
+# info URL down, mihomo misbehaving) rather than ~all nodes dying at
+# once: failure counters are NOT incremented for that round.
+ANOMALY_FAIL_RATIO = 0.6
+ANOMALY_MIN_ATTEMPTED = 10
 
 
 def _now_cst() -> str:
@@ -70,8 +77,11 @@ def save_availability(cfg, records: dict) -> dict:
                 seen = None
             if seen is None or seen >= cutoff:
                 kept[key] = rec
-        availability_file(cfg).write_text(
-            json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8")
+        path = availability_file(cfg)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(kept, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, path)
         return kept
     except Exception as e:  # noqa: BLE001 - persistence is best-effort
         log.warning("availability persist failed: %s", e)
@@ -110,6 +120,16 @@ def update_availability(cfg, records: dict, proxies: list[dict],
     counter untouched.
     """
     now = _now_cst()
+    attempted = [r for r in (purity.get(dedup_key(p)) for p in proxies)
+                 if r is not None and r.get("attempts", 0) > 0]
+    failed = sum(1 for r in attempted if not r.get("measured"))
+    anomaly = (len(attempted) >= ANOMALY_MIN_ATTEMPTED
+               and failed / len(attempted) > ANOMALY_FAIL_RATIO)
+    if anomaly:
+        log.warning("availability: %d/%d attempted nodes failed this round "
+                    "(> %.0f%%) — treating it as a checker problem, failure "
+                    "counters not incremented", failed, len(attempted),
+                    ANOMALY_FAIL_RATIO * 100)
     for p in proxies:
         key = dedup_key(p)
         rec = purity.get(key)
@@ -119,15 +139,16 @@ def update_availability(cfg, records: dict, proxies: list[dict],
         if rec.get("measured"):
             if key in records:
                 records[key] = {"fails": 0, "name": name, "last_seen": now}
-        elif rec.get("attempts", 0) > 0:
+        elif rec.get("attempts", 0) > 0 and not anomaly:
             prev = records.get(key, {"fails": 0, "name": name,
                                      "last_seen": now})
             records[key] = {"fails": prev.get("fails", 0) + 1,
                             "name": name, "last_seen": now}
-        # attempts == 0: not attempted this round, counter untouched.
+        # attempts == 0 or anomalous round: counter untouched.
     records = save_availability(cfg, records)
     kept = [p for p in proxies
             if records.get(dedup_key(p), {}).get("fails", 0) < FAIL_THRESHOLD]
     stats = {"availability_tracked": len(records),
-             "availability_omitted": len(proxies) - len(kept)}
+             "availability_omitted": len(proxies) - len(kept),
+             "availability_anomaly_skipped": anomaly}
     return kept, stats

@@ -28,8 +28,6 @@ from app.config import FRONT_GROUP
 log = logging.getLogger(__name__)
 
 UDP_TYPES = {"hysteria2", "tuic", "wireguard"}
-TCP_TYPES = {"ss", "ssr", "vmess", "vless", "trojan", "socks5", "http",
-             "anytls", "snell", "tuic-tcp"}
 
 
 def front_group_from_ini(ini) -> str:

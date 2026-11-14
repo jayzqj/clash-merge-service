@@ -19,7 +19,12 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+
+# Upper bounds enforced by validate(). 8 mihomo instances already
+# saturate a 2 GB VPS under MemoryMax=512M; a day is the longest
+# sensible interval.
+MAX_PURITY_WORKERS = 8
+MAX_INTERVAL_SECONDS = 86400
 
 DEFAULTS: dict = {
     "subscriptions": [],
@@ -34,15 +39,22 @@ DEFAULTS: dict = {
     "purity_enabled": True,
     "purity_info_url": "https://my.123169.xyz/v1/info",
     "purity_workers": 1,
-    # Dedicated front for backend (静态) purity checks: a full proxy
+    # Delay screen before the per-node purity loop (see app/purity.py):
+    # nodes failing mihomo's group delay test get one short info
+    # attempt instead of 3 x 30 s. Turn off to check every node the
+    # slow way.
+    "purity_delay_screen": True,
+    "purity_delay_url": "https://cp.cloudflare.com/generate_204",
+    # OPTIONAL front for backend (静态) purity checks: a full proxy
     # dict (same shape as one entry of a subscription's "proxies").
-    # The Bright Data gateway rejects airport-front exit IPs, so
-    # backend checks ride this front (verified 2026-11-12: the
-    # user's Racknerd anytls node, exit = VPS IP). Null = fall back
-    # to picking a front from the merged nodes (statics will usually
-    # end up unmeasured). Config-file only, never edited on /admin
-    # (it carries the node's password) and never echoed by the API.
+    # Default is to check backend nodes DIRECT from the VPS (the
+    # Bright Data gateway accepts the VPS IP — verified 2026-11-14,
+    # 170/171 measured). The front is used only when check_front is
+    # set AND check_front_enabled is true. Config-file only, never
+    # edited on /admin (it carries the node's password) and never
+    # echoed by the API; the switch itself can be toggled on /admin.
     "check_front": None,
+    "check_front_enabled": False,
     "mihomo_bin": "mihomo",
     "mihomo_workdir": "/opt/clash-merge-service/mihomo",
     "mihomo_mixed_port": 7890,
@@ -69,27 +81,7 @@ def default_config_path() -> Path:
     return Path(__file__).resolve().parent.parent / "config.json"
 
 
-def mask_url(url: str) -> str:
-    """Hide credential material in a URL for display/API responses.
-
-    Keeps scheme + host + path, drops query values (tokens) and any
-    userinfo. Never returns the raw URL.
-    """
-    if not url:
-        return ""
-    try:
-        p = urlparse(url)
-        netloc = p.hostname or ""
-        if p.port:
-            netloc += f":{p.port}"
-        return urlunparse((p.scheme, netloc, p.path, "", "", ""))
-    except Exception:
-        return "<unparseable-url>"
-
-
 def mask_webhook(url: str) -> str:
-    if not url:
-        return ""
     return "set" if url else ""
 
 
@@ -122,7 +114,7 @@ class Config:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
+        tmp = self.path.with_name(self.path.name + ".tmp")
         tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2),
                        encoding="utf-8")
         os.replace(tmp, self.path)
@@ -167,7 +159,8 @@ class Config:
     @property
     def purity_workers(self) -> int:
         try:
-            return max(1, min(int(self.data.get("purity_workers", 1) or 1), 16))
+            return max(1, min(int(self.data.get("purity_workers", 1) or 1),
+                              MAX_PURITY_WORKERS))
         except (TypeError, ValueError):
             return 1
 
@@ -176,19 +169,31 @@ class Config:
         front = self.data.get("check_front")
         return front if isinstance(front, dict) else None
 
+    @property
+    def check_front_enabled(self) -> bool:
+        return bool(self.data.get("check_front_enabled", False))
+
     # -- validation -----------------------------------------------------
     def validate(self) -> list[str]:
         errors: list[str] = []
-        if self.interval_seconds < self.min_interval_seconds:
+        try:
+            interval = int(self.data.get("interval_seconds", 3600))
+        except (TypeError, ValueError):
+            interval = 0
+        if interval < self.min_interval_seconds:
             errors.append(
                 f"interval_seconds must be >= {self.min_interval_seconds} "
                 f"(a full purity round over ~270 nodes takes tens of minutes)")
+        elif interval > MAX_INTERVAL_SECONDS:
+            errors.append(
+                f"interval_seconds must be <= {MAX_INTERVAL_SECONDS} (1 day)")
         try:
             workers = int(self.data.get("purity_workers", 1) or 1)
         except (TypeError, ValueError):
             workers = 0
-        if not 1 <= workers <= 16:
-            errors.append("purity_workers must be between 1 and 16")
+        if not 1 <= workers <= MAX_PURITY_WORKERS:
+            errors.append(
+                f"purity_workers must be between 1 and {MAX_PURITY_WORKERS}")
         front = self.data.get("check_front")
         if front is not None:
             if not isinstance(front, dict):
@@ -197,6 +202,9 @@ class Config:
                 for key in ("name", "type", "server", "port"):
                     if not front.get(key):
                         errors.append(f"check_front is missing {key}")
+        if self.check_front_enabled and not isinstance(front, dict):
+            errors.append("check_front_enabled is on but check_front is not "
+                          "configured in config.json")
         for s in self.subscriptions:
             url = (s.get("url") or "").strip()
             if not url:

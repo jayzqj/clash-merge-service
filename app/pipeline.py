@@ -21,7 +21,9 @@ Pipeline order (hard requirement):
 8. inject dialer-proxy AFTER conversion, fill backend groups
 9. add the low-purity group (measured score <= 15, http excluded)
    to 手动选择 and 国外AI
-10. atomically replace the output file — ONLY on full success.
+10. guard: refuse to publish 0 proxies, or fewer than 30% of the
+    currently published count (last good file kept, step "guard")
+11. atomically replace the output file — ONLY on full success.
     Any failure keeps the last good file and records step + reason.
 
 ``reapply_rules`` is a separate, lighter path for when the user
@@ -43,6 +45,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -58,16 +61,36 @@ from app.config import Config
 from app.converter import apply_exclude, parse_ini
 from app.dialer import (fill_backend_groups, front_group_from_ini,
                         inject_dialer)
-from app.groups import add_low_purity_group, scores_from_names
-from app.merge import dedup_key
-from app.names import normalize_name
 from app.fetcher import FetchError, fetch_subscription, fetch_text, make_client
-from app.merge import merge_proxies, prefix_purity_names, sort_by_purity
+from app.groups import add_low_purity_group, scores_from_names
+from app.merge import (dedup_key, merge_proxies, prefix_purity_names,
+                       sort_by_purity)
+from app.names import normalize_name
 from app.notify import failure_text, send_wechat, success_text
 from app.purity import MihomoChecker
 
 log = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
+
+# Output guard: refuse to publish a file whose node count collapsed
+# compared with the currently published one (e.g. an upstream returned
+# a near-empty subscription, or the checker went haywire). The last
+# good file is kept and the run is reported as failed at step "guard".
+# Only a drop BELOW this share of the previous count trips it, so the
+# normal "one of several sources failed" case still publishes.
+GUARD_MIN_RATIO = 0.3
+GUARD_MIN_PREVIOUS = 20
+
+# Set by reschedule() so the scheduler re-reads next_run right away
+# instead of sleeping out a delay computed from the old interval.
+_wake: asyncio.Event | None = None
+
+
+def _wake_event() -> asyncio.Event:
+    global _wake
+    if _wake is None:
+        _wake = asyncio.Event()
+    return _wake
 
 
 def _now_cst() -> str:
@@ -116,12 +139,43 @@ def load_state(cfg: Config) -> ServiceState:
 
 def persist_state(cfg: Config, state: ServiceState) -> None:
     try:
-        _state_file(cfg).write_text(json.dumps({
+        path = _state_file(cfg)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({
             "last_run": state.last_run, "next_run": state.next_run,
             "runs_started": state.runs_started,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
     except Exception as e:  # noqa: BLE001 - state persistence is best-effort
         log.warning("state persist failed: %s", e)
+
+
+def _published_proxy_count(out_path: Path) -> int | None:
+    """Node count of the currently published file, or None if there
+    is none / it cannot be parsed."""
+    try:
+        if not out_path.exists():
+            return None
+        doc = yaml.safe_load(out_path.read_text(encoding="utf-8")) or {}
+        return len(doc.get("proxies") or [])
+    except Exception:  # noqa: BLE001 - guard is advisory on a bad old file
+        return None
+
+
+def _guard_output(cfg: Config, doc: dict, report: dict) -> None:
+    """Refuse to publish an empty or collapsed file. Raises
+    FetchError("guard", ...); the last good file stays in place."""
+    new = len(doc.get("proxies") or [])
+    prev = _published_proxy_count(Path(cfg.output_path))
+    report["guard_previous_proxies"] = prev
+    if new == 0:
+        raise FetchError("guard", "new output has 0 proxies, not publishing")
+    if (prev is not None and prev >= GUARD_MIN_PREVIOUS
+            and new < prev * GUARD_MIN_RATIO):
+        raise FetchError(
+            "guard", f"new output has {new} proxies vs {prev} published "
+            f"(< {int(GUARD_MIN_RATIO * 100)}%), not publishing — "
+            "keep the last good file; check the sources")
 
 
 async def _write_output(cfg: Config, doc: dict) -> None:
@@ -129,13 +183,15 @@ async def _write_output(cfg: Config, doc: dict) -> None:
     and atomically replace the published file. A config Clash Verge
     rejects must never overwrite the last good file. If the binary
     is missing entirely, warn and skip validation rather than
-    blocking. Raises FetchError("validate", ...) on a failed check."""
+    blocking. Raises FetchError("validate", ...) on a failed check.
+
+    The temp file lives next to config.json, NOT in the web root:
+    OpenResty serves the output directory statically, and a
+    half-written or rejected candidate must never be downloadable.
+    It is always removed on failure."""
     out_path = Path(cfg.output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out_path.with_suffix(".tmp")
-    tmp.write_text(yaml.safe_dump(doc, allow_unicode=True,
-                                  sort_keys=False, width=100000),
-                   encoding="utf-8")
+    tmp = cfg.path.parent / "output.tmp.yaml"
     mihomo_bin = cfg.data.get("mihomo_bin") or "mihomo"
     workdir = cfg.data.get("mihomo_workdir") or "/opt/clash-merge-service/mihomo"
 
@@ -145,16 +201,30 @@ async def _write_output(cfg: Config, doc: dict) -> None:
             capture_output=True, text=True, timeout=120)
 
     try:
-        res = await asyncio.to_thread(_validate)
-    except FileNotFoundError:
-        log.warning("pipeline: mihomo binary %r not found, "
-                    "skipping -t validation", mihomo_bin)
-    else:
-        if res.returncode != 0:
-            tail = ((res.stderr or "") + (res.stdout or ""))[-500:]
-            raise FetchError("validate", f"mihomo -t failed: {tail.strip()}")
-        log.info("pipeline: mihomo -t passed for new output")
-    os.replace(tmp, out_path)
+        tmp.write_text(yaml.safe_dump(doc, allow_unicode=True,
+                                      sort_keys=False, width=100000),
+                       encoding="utf-8")
+        try:
+            res = await asyncio.to_thread(_validate)
+        except FileNotFoundError:
+            log.warning("pipeline: mihomo binary %r not found, "
+                        "skipping -t validation", mihomo_bin)
+        else:
+            if res.returncode != 0:
+                tail = ((res.stderr or "") + (res.stdout or ""))[-500:]
+                raise FetchError("validate",
+                                 f"mihomo -t failed: {tail.strip()}")
+            log.info("pipeline: mihomo -t passed for new output")
+        try:
+            os.replace(tmp, out_path)
+        except OSError:
+            # Different filesystem (EXDEV): copy next to the target
+            # first, then rename there, so the swap stays atomic.
+            staged = out_path.with_name("." + out_path.name + ".staged")
+            shutil.copyfile(tmp, staged)
+            os.replace(staged, out_path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
@@ -260,22 +330,29 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
         if not subs:
             raise FetchError("fetch", "no enabled subscriptions in config")
         async with make_client(timeout=60) as client:
+            # Sources are fetched concurrently (one slow airport no
+            # longer serializes the rest); results keep config order.
+            results = await asyncio.gather(
+                *(fetch_subscription(s["url"], client) for s in subs),
+                return_exceptions=True)
             fetched: list[tuple[str, list[dict]]] = []
             failed: list[dict] = []
-            for s in subs:
-                try:
-                    proxies = await fetch_subscription(s["url"], client)
-                except FetchError as e:
+            for s, res in zip(subs, results):
+                if isinstance(res, BaseException):
+                    if not isinstance(res, Exception):
+                        raise res  # CancelledError etc.: do not swallow
                     # Per-source tolerance: skip this source, keep going
                     # with the rest. The URL + reason go into the report
                     # (admin page shows them; the WeChat notification
                     # only ever shows the counts, never the address).
-                    failed.append({"url": s["url"], "error": e.reason})
+                    reason = (res.reason if isinstance(res, FetchError)
+                              else f"{type(res).__name__}: {res}"[:300])
+                    failed.append({"url": s["url"], "error": reason})
                     log.warning("fetch: source %s (%s) failed, skipping: %s",
-                                s.get("id"), s["url"], e.reason)
+                                s.get("id"), s["url"], reason)
                     continue
-                fetched.append((s.get("id", "?"), proxies))
-                log.info("fetch: %s -> %d nodes", s.get("id"), len(proxies))
+                fetched.append((s.get("id", "?"), res))
+                log.info("fetch: %s -> %d nodes", s.get("id"), len(res))
             report["sources_ok"] = len(fetched)
             report["sources_failed"] = failed
             if not fetched:
@@ -288,7 +365,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             merged, mstats = merge_proxies(fetched)
             report.update(mstats)
 
-            step = "prefilter"
+            step = "fetch-ini"
             # Fetch the ini early: its exclude_remarks decides which
             # nodes are worth testing at all. Same matching as the
             # converter (apply_exclude, re.search on the name), so a
@@ -297,8 +374,14 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             # two agree exactly. The converter still runs its own
             # apply_exclude as a safety net.
             ini_text = await fetch_text(cfg.ini_url, client)
+            step = "prefilter"
             ini = parse_ini(ini_text)
-            to_test, pre_excluded = apply_exclude(merged, ini)
+            # Match on the normalized name (what the converter and
+            # reapply see once the score prefix is stripped — see
+            # converter.exclude_match_name), not the raw airport name.
+            to_test, pre_excluded = apply_exclude(
+                merged, ini,
+                name_of=lambda p: normalize_name(str(p.get("name", "")), None))
             report["prefilter_excluded"] = pre_excluded
             kept_ids = {id(p) for p in to_test}
             report["prefilter_excluded_names"] = [
@@ -318,6 +401,14 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             report["purity_mismatched_exit_ip"] = sum(
                 1 for r in purity.values()
                 if r.get("measured") and r.get("match") is False)
+            # Delay screen stats: how many nodes failed the screen,
+            # and how many of those the short info attempt still
+            # measured (the screen's false negatives).
+            screen_failed = [r for r in purity.values()
+                             if r.get("delay_screen") == "fail"]
+            report["purity_delay_screen_failed"] = len(screen_failed)
+            report["purity_delay_screen_rescued"] = sum(
+                1 for r in screen_failed if r.get("measured"))
 
             step = "availability"
             # Nodes that failed 3 rounds in a row are omitted from
@@ -358,7 +449,12 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                           "rules": len(doc.get("rules", [])),
                           "rule_providers": len(doc.get("rule-providers", {})),
                           "excluded_by_ini": 0, "proxies_in": len(ordered)}
-                doc["proxies"] = ordered if len(doc.get("proxies", [])) != len(ordered) else doc["proxies"]
+                # Keep the remote doc as-is: its groups reference the
+                # remote proxy list (which may have dropped nodes per
+                # the ini), so swapping in our list would desync them.
+                if cstats["proxies_out"] != len(ordered):
+                    log.info("remote convert: %d proxies in, %d out",
+                             len(ordered), cstats["proxies_out"])
             else:
                 doc, cstats = await converter_mod.convert(ordered, ini_text, client)
             report.update(cstats)
@@ -386,6 +482,9 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                     scores_by_name[str(p.get("name", ""))] = int(rec["score"])
             report.update(add_low_purity_group(doc, doc["proxies"],
                                                scores_by_name))
+
+            step = "guard"
+            _guard_output(cfg, doc, report)
 
             step = "write"
             await _write_output(cfg, doc)
@@ -415,6 +514,8 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
         state.next_run = (datetime.now(CST) +
                           timedelta(seconds=cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         persist_state(cfg, state)
+        # A manual run moved next_run: let the scheduler re-read it.
+        _wake_event().set()
 
     # Notify (master switch; success AND failure, never node-change alone).
     if cfg.notify_enabled and cfg.wechat_webhook:
@@ -431,17 +532,39 @@ def reschedule(state: ServiceState, cfg: Config) -> None:
     state.next_run = (datetime.now(CST) +
                       timedelta(seconds=cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
     persist_state(cfg, state)
+    # Wake the scheduler so it sleeps against the NEW next_run (an
+    # interval shortened on /admin used to wait out the old delay).
+    _wake_event().set()
 
 
 async def scheduler_loop(cfg: Config, state: ServiceState) -> None:
-    """Internal scheduler: sleep until next_run, then run. No cron."""
+    """Internal scheduler: sleep until next_run (or until reschedule()
+    wakes it), then run. No cron. Never dies: any error in one
+    iteration is logged and the loop carries on."""
+    wake = _wake_event()
     while True:
         try:
-            nxt = datetime.strptime(state.next_run, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST)
-        except Exception:
-            nxt = datetime.now(CST) + timedelta(seconds=cfg.interval_seconds)
-            state.next_run = nxt.strftime("%Y-%m-%d %H:%M:%S")
-        delay = max(1.0, (nxt - datetime.now(CST)).total_seconds())
-        await asyncio.sleep(delay)
-        if not state.running:
+            try:
+                nxt = datetime.strptime(state.next_run, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST)
+            except Exception:
+                nxt = datetime.now(CST) + timedelta(seconds=cfg.interval_seconds)
+                state.next_run = nxt.strftime("%Y-%m-%d %H:%M:%S")
+            delay = (nxt - datetime.now(CST)).total_seconds()
+            if delay > 0:
+                wake.clear()
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=delay)
+                    continue  # rescheduled: recompute against new next_run
+                except asyncio.TimeoutError:
+                    pass
+            if state.running:
+                # A manual run is in progress; its finally block sets
+                # a fresh next_run. Re-check shortly.
+                await asyncio.sleep(30)
+                continue
             await run_pipeline(cfg, state)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the scheduler must survive
+            log.exception("scheduler: iteration failed, retrying in 60s")
+            await asyncio.sleep(60)

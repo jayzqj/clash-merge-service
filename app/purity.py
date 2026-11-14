@@ -15,12 +15,12 @@ Method (from the existing task, ``check_nodes.py`` / ``run_all.py``):
 
 Differences from the old task: NO ≤15% threshold and NO filtering —
 every node is kept; purity only orders the output (measured by score
-ascending, unmeasured last in original order). Backend (静态) TCP
-nodes are checked through a front node via ``dialer-proxy`` (a
-concrete front proxy name, chosen from the merged list — see
-``choose_front``); UDP backend nodes cannot carry dialer-proxy, so
-they are checked direct and will usually end up unmeasured if they
-need the chain (kept anyway).
+ascending, unmeasured last in original order).
+
+Backend (静态) nodes are checked DIRECT from the VPS by default (no
+``dialer-proxy`` in the temporary check config). Only the CHECK is
+direct — the published output still gives backend TCP nodes
+``dialer-proxy: <ini 前置 group>`` (see ``app/dialer.py``).
 
 If mihomo is unavailable or ``purity_enabled`` is off, every node is
 returned unmeasured and the pipeline continues — purity must never
@@ -36,21 +36,28 @@ the nodes; workers run in a thread pool and their results are merged.
 Each worker is an independent ``MihomoChecker``; nothing is shared
 between them except the read-only config.
 
-Dedicated check front (``check_front``, a full proxy dict in the
-config file, never committed): backend (静态) nodes are Bright Data
-superproxy endpoints (``http`` to ``brd.superproxy.io:44445``) and
-the gateway only accepts the chain when the connecting IP is one it
-accepts. Verified 2026-11-12 on the VPS: through airport fronts
-(LA hysteria2 exit 198.255.5.154, Japan vless/hysteria2 exit
-103.62.49.130) every static check fails with TLS EOF — direct,
-through a front, and with the old task's hosts override; through
-the user's own Racknerd anytls node (exit = VPS IP 23.238.2.198)
-the same nodes measure fine and match the old 3-hourly task exactly
-(US-静态01 57%, US-静态02 28%, US-静态03 20%). So when
-``check_front`` is configured, ALL backend checks in every worker
-ride that front; without it, each worker falls back to
-``choose_front`` on its own shard (airport fronts — statics will
-usually end up unmeasured).
+Why direct: backend nodes are Bright Data superproxy endpoints
+(``http`` to ``brd.superproxy.io:44445``) and the gateway rejects
+airport-front exit IPs (TLS EOF through LA hysteria2 / Japan
+vless fronts, verified 2026-11-12). The VPS's own IP is accepted:
+re-verified 2026-11-14, 170/171 static nodes measured direct from
+the VPS with scores identical to the published file (the one miss
+was a transient TLS EOF). The check config sets ``ipv6: false``
+because the gateway is only reachable over IPv4 from the VPS.
+
+Optional check front (``check_front`` = a full proxy dict in the
+config file, never committed; ``check_front_enabled`` = switch,
+default off): when BOTH are set, backend TCP checks ride that front
+via ``dialer-proxy`` instead of going direct. Useful only if the
+VPS IP ever stops being accepted. There is no automatic fallback to
+an airport front any more — that path never measured anything.
+
+Delay screen (``purity_delay_screen``, default on): before the
+per-node loop each worker runs mihomo's concurrent group delay test
+over its shard. Nodes that pass get the normal check (3 attempts,
+30 s each). Nodes that fail both delay rounds get ONE info attempt
+with a 15 s timeout — a dead node costs ~15 s instead of up to
+~94 s, and a node the delay test wrongly failed is still measured.
 """
 from __future__ import annotations
 
@@ -67,27 +74,40 @@ from pathlib import Path
 import httpx
 import yaml
 
+from app.config import MAX_PURITY_WORKERS as MAX_WORKERS
 from app.merge import dedup_key, expected_ip
 
 log = logging.getLogger(__name__)
 
 SELECTOR_GROUP = "MERGE-CHECK"
-FRONT_PREFERENCE = ("hysteria2", "anytls", "vless", "vmess", "trojan", "ss")
+# Name the check front gets inside the test config (never collides
+# with a subscription node's name).
+FRONT_INTERNAL_NAME = "__check_front__"
+UDP_TYPES = ("hysteria2", "tuic", "wireguard")
+MAX_ATTEMPTS = 3
+RETRY_SLEEP = 2
+INFO_TIMEOUT = 30
+
+# Delay screen (see MihomoChecker.screen_alive). Measured on the VPS
+# 2026-11-14 over 307 nodes: one group delay test takes its timeout
+# (10 s); 60/60 sampled nodes that passed it also measured; but a
+# FAILED delay test is not proof of death — with a 5 s timeout 13 of
+# 22 delay-failed nodes still measured fine, with 10 s only 10 nodes
+# failed both rounds. So the screen is a hint, never a verdict: a
+# node that fails it still gets ONE info attempt with a short timeout
+# instead of MAX_ATTEMPTS x INFO_TIMEOUT.
+DELAY_URL = "https://cp.cloudflare.com/generate_204"
+DELAY_TIMEOUT_MS = 10000
+DELAY_ROUNDS = 2
+SCREEN_FAIL_TIMEOUT = 15
+# Below this pass share the screen itself is considered broken (test
+# URL down, mihomo overloaded) and is ignored for the shard.
+SCREEN_MIN_PASS_RATIO = 0.2
+SCREEN_MIN_NODES = 5
 
 
 def ippure_url(ip: str | None) -> str:
     return f"https://ippure.com/?ip={ip}" if ip else "https://ippure.com/"
-
-
-def choose_front(proxies: list[dict]) -> str | None:
-    """Pick a concrete front proxy for backend nodes: first
-    non-backend node, preferring hysteria2, then anytls, etc."""
-    candidates = [p for p in proxies if "静态" not in str(p.get("name", ""))]
-    for pref in FRONT_PREFERENCE:
-        for p in candidates:
-            if str(p.get("type", "")).lower() == pref:
-                return str(p["name"])
-    return str(candidates[0]["name"]) if candidates else None
 
 
 def _worker_workdir(base: Path, worker_id: int) -> Path:
@@ -129,10 +149,13 @@ def build_mihomo_config(proxies: list[dict], front_name: str | None,
     cfg_proxies = []
     for p in proxies:
         node = dict(p)
-        # Backend TCP nodes ride the front for the check; UDP backend
-        # nodes stay direct (they cannot carry dialer-proxy).
-        if "静态" in str(node.get("name", "")) and front_name:
-            if str(node.get("type", "")).lower() not in ("hysteria2", "tuic", "wireguard"):
+        # Never inherit a dialer-proxy from the source: by default
+        # every node (backend included) is checked direct.
+        node.pop("dialer-proxy", None)
+        # Only with an explicitly enabled check front do backend TCP
+        # nodes ride it; UDP nodes cannot carry dialer-proxy.
+        if front_name and "静态" in str(node.get("name", "")):
+            if str(node.get("type", "")).lower() not in UDP_TYPES:
                 node["dialer-proxy"] = front_name
         cfg_proxies.append(node)
     for p in (extra_proxies or []):
@@ -150,6 +173,9 @@ def build_mihomo_config(proxies: list[dict], front_name: str | None,
         "mixed-port": mixed_port,
         "external-controller": f"127.0.0.1:{controller_port}",
         "allow-lan": False,
+        # The Bright Data gateway is only reachable over IPv4 from
+        # the VPS; IPv6 resolution would make direct checks flaky.
+        "ipv6": False,
         "log-level": "warning",
         "proxies": cfg_proxies,
         "proxy-groups": [
@@ -174,11 +200,13 @@ class MihomoChecker:
         self.controller_port = int(config.data.get("mihomo_controller_port", 9090)) + worker_id
         self.info_url = config.data.get("purity_info_url",
                                         "https://my.123169.xyz/v1/info")
-        # Dedicated front for backend checks (full proxy dict from
-        # the config file, or None). See the module docstring: the
-        # Bright Data gateway rejects airport-front exit IPs.
+        # Optional dedicated front for backend checks: used only when
+        # check_front is a full proxy dict AND check_front_enabled is
+        # on. Default: backend nodes are checked direct.
         front = config.data.get("check_front") or None
-        self.check_front: dict | None = front if isinstance(front, dict) else None
+        enabled = bool(config.data.get("check_front_enabled", False))
+        self.check_front: dict | None = (
+            front if (enabled and isinstance(front, dict)) else None)
 
     def _controller(self, path: str) -> str:
         return f"http://127.0.0.1:{self.controller_port}{path}"
@@ -190,12 +218,16 @@ class MihomoChecker:
                         self.cfg.data.get("mihomo_bin"))
             return False
         if self.check_front:
-            front_name = str(self.check_front.get("name", ""))
-            extra = [self.check_front]
+            # Renamed internally: a check front sharing its name with
+            # a subscription node would make mihomo refuse the config
+            # (duplicate proxy name) and lose the whole round.
+            front_name: str | None = FRONT_INTERNAL_NAME
+            extra = [dict(self.check_front, name=FRONT_INTERNAL_NAME)]
             log.info("purity worker %d: backend checks ride configured "
-                     "front %s", self.worker_id, front_name)
+                     "front %s", self.worker_id,
+                     self.check_front.get("name", ""))
         else:
-            front_name = choose_front(proxies)
+            front_name = None
             extra = []
         cfg = build_mihomo_config(proxies, front_name, self.mixed_port,
                                   self.controller_port, extra_proxies=extra)
@@ -203,11 +235,20 @@ class MihomoChecker:
         cfg_path = self.workdir / "config.yaml"
         cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True,
                                            sort_keys=False), encoding="utf-8")
-        logfile = open(self.workdir / "mihomo.log", "a", encoding="utf-8")
-        self.proc = subprocess.Popen(
-            [binary, "-f", str(cfg_path), "-d", str(self.workdir)],
-            stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True)
+        # The child keeps its own copy of the fd; close ours right
+        # away so every round does not leak one file handle.
+        with open(self.workdir / "mihomo.log", "a", encoding="utf-8") as logfile:
+            self.proc = subprocess.Popen(
+                [binary, "-f", str(cfg_path), "-d", str(self.workdir)],
+                stdout=logfile, stderr=subprocess.STDOUT,
+                start_new_session=True)
         for _ in range(30):
+            if self.proc.poll() is not None:
+                log.warning("purity worker %d: mihomo exited early (code %s), "
+                            "see %s", self.worker_id, self.proc.returncode,
+                            self.workdir / "mihomo.log")
+                self.proc = None
+                return False
             try:
                 r = httpx.get(self._controller("/version"), timeout=3,
                               trust_env=False)
@@ -237,21 +278,64 @@ class MihomoChecker:
                       json={"name": name}, timeout=10, trust_env=False)
         r.raise_for_status()
 
-    def _info_once(self) -> dict:
+    def _info_once(self, timeout: float = INFO_TIMEOUT) -> dict:
         proxy = f"http://127.0.0.1:{self.mixed_port}"
-        with httpx.Client(proxy=proxy, timeout=30, trust_env=False) as client:
+        with httpx.Client(proxy=proxy, timeout=timeout,
+                          trust_env=False) as client:
             r = client.get(self.info_url,
                            headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
             return r.json()
 
-    def check_one(self, proxy: dict) -> dict:
+    def screen_alive(self, proxies: list[dict]) -> set[str] | None:
+        """Delay screen: one concurrent delay test over the whole
+        selector group (a few seconds for a full shard), repeated
+        DELAY_ROUNDS times; a node passing ANY round is 'alive'.
+
+        Returns the set of alive node names, or None when the screen
+        is disabled / errored / implausible — the caller then checks
+        every node the normal way. Note mihomo answers 504 when every
+        proxy times out, which lands in the error path on purpose."""
+        if not self.cfg.data.get("purity_delay_screen", True):
+            return None
+        url = str(self.cfg.data.get("purity_delay_url") or DELAY_URL)
+        names = [str(p["name"]) for p in proxies]
+        alive: set[str] = set()
+        try:
+            for _ in range(DELAY_ROUNDS):
+                r = httpx.get(
+                    self._controller(f"/group/{SELECTOR_GROUP}/delay"),
+                    params={"url": url, "timeout": DELAY_TIMEOUT_MS},
+                    timeout=DELAY_TIMEOUT_MS / 1000 + 20, trust_env=False)
+                r.raise_for_status()
+                data = r.json()
+                alive.update(n for n in names
+                             if isinstance(data.get(n), int) and data[n] > 0)
+                if len(alive) == len(names):
+                    break
+        except Exception as e:  # noqa: BLE001 - screen is optional
+            log.warning("purity worker %d: delay screen failed (%s), "
+                        "checking every node normally", self.worker_id,
+                        f"{type(e).__name__}: {e}"[:200])
+            return None
+        if (len(names) >= SCREEN_MIN_NODES
+                and len(alive) < len(names) * SCREEN_MIN_PASS_RATIO):
+            log.warning("purity worker %d: delay screen passed only %d/%d "
+                        "nodes — ignoring it, checking every node normally",
+                        self.worker_id, len(alive), len(names))
+            return None
+        log.info("purity worker %d: delay screen %d/%d alive",
+                 self.worker_id, len(alive), len(names))
+        return alive
+
+    def check_one(self, proxy: dict, attempts: int = MAX_ATTEMPTS,
+                  timeout: float = INFO_TIMEOUT) -> dict:
         exp_ip = expected_ip(proxy)
         last_err = ""
-        for attempt in range(3):
+        for attempt in range(attempts):
             try:
                 self._select(str(proxy["name"]))
-                data = self._info_once()
+                data = self._info_once(timeout)
                 got_ip = data.get("ip")
                 score = data.get("fraudScore")
                 if score is None:
@@ -265,11 +349,12 @@ class MihomoChecker:
                         "attempts": attempt + 1}
             except Exception as e:  # noqa: BLE001 - retry any failure
                 last_err = str(e)[:200]
-                time.sleep(2)
+                if attempt < attempts - 1:
+                    time.sleep(RETRY_SLEEP)
         return {"measured": False, "score": None, "exit_ip": None,
                 "country": "", "expected_ip": exp_ip, "match": False,
                 "ippure_url": ippure_url(exp_ip), "error": last_err,
-                "attempts": 3}
+                "attempts": attempts}
 
     def _check_shard(self, shard: list[dict], worker_id: int) -> dict:
         """Check one shard with a dedicated mihomo instance. Runs in
@@ -281,11 +366,55 @@ class MihomoChecker:
                         "unmeasured", worker_id, len(shard))
             return results
         try:
+            alive = checker.screen_alive(shard)
             for p in shard:
-                results[dedup_key(p)] = checker.check_one(p)
+                if alive is None or str(p["name"]) in alive:
+                    rec = checker.check_one(p)
+                    if alive is not None:
+                        rec["delay_screen"] = "pass"
+                else:
+                    # Failed the delay screen: probably dead, but the
+                    # screen has false negatives, so it still gets one
+                    # short info attempt before counting as a failure.
+                    rec = checker.check_one(p, attempts=1,
+                                            timeout=SCREEN_FAIL_TIMEOUT)
+                    rec["delay_screen"] = "fail"
+                if checker.proc is not None and checker.proc.poll() is not None:
+                    # mihomo died mid-shard (e.g. OOM-killed): this node
+                    # and the rest of the shard were not really tested.
+                    # Leave them out -> check_all marks them attempts=0,
+                    # so they do not count as availability failures.
+                    log.warning("purity worker %d: mihomo exited (code %s) "
+                                "mid-shard, %d nodes left unmeasured",
+                                worker_id, checker.proc.returncode,
+                                len(shard) - len(results))
+                    checker.proc = None
+                    break
+                results[dedup_key(p)] = rec
         finally:
             checker.stop()
         return results
+
+    def probe_info(self) -> str:
+        """Direct (no proxy) request to the info endpoint before a
+        round. Returns "" if it answers with a fraudScore, else the
+        error. If the endpoint itself is down or rate-limiting, every
+        node would 'fail' — that must not count against the nodes."""
+        last = ""
+        for attempt in range(2):
+            try:
+                with httpx.Client(timeout=15, trust_env=False) as client:
+                    r = client.get(self.info_url,
+                                   headers={"User-Agent": "Mozilla/5.0"})
+                    r.raise_for_status()
+                    if r.json().get("fraudScore") is None:
+                        raise RuntimeError("no fraudScore in response")
+                    return ""
+            except Exception as e:  # noqa: BLE001 - reported to the caller
+                last = f"{type(e).__name__}: {e}"[:200]
+                if attempt == 0:
+                    time.sleep(RETRY_SLEEP)
+        return last
 
     def check_all(self, proxies: list[dict]) -> dict:
         """Returns {dedup_key: purity-record}.
@@ -298,13 +427,23 @@ class MihomoChecker:
         aborts the other workers.
         """
         results: dict = {}
+        skip_reason = "purity check skipped/unavailable"
+        probe_err = ""
         if not self.cfg.data.get("purity_enabled", True):
             log.info("purity: disabled in config, all nodes unmeasured")
         elif not proxies:
             return results
+        elif (probe_err := self.probe_info()):
+            # Info endpoint unreachable from the VPS itself: nothing
+            # this round could measure. All nodes stay attempts=0.
+            log.warning("purity: info endpoint %s unreachable directly "
+                        "(%s) — skipping this round's checks, nodes "
+                        "left unmeasured and not counted as failures",
+                        self.info_url, probe_err)
+            skip_reason = f"info endpoint unreachable: {probe_err}"
         else:
             workers = int(self.cfg.data.get("purity_workers", 1) or 1)
-            workers = max(1, min(workers, 16, len(proxies)))
+            workers = max(1, min(workers, MAX_WORKERS, len(proxies)))
             if workers == 1:
                 results = self._check_shard(proxies, 0)
             else:
@@ -326,5 +465,5 @@ class MihomoChecker:
                 "measured": False, "score": None, "exit_ip": None,
                 "country": "", "expected_ip": expected_ip(p),
                 "match": False, "ippure_url": ippure_url(expected_ip(p)),
-                "error": "purity check skipped/unavailable", "attempts": 0})
+                "error": skip_reason, "attempts": 0})
         return results

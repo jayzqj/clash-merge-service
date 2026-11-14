@@ -15,6 +15,7 @@ button{padding:6px 14px;margin:4px 4px 4px 0;cursor:pointer}
 label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 .row{display:flex;gap:12px}.row>div{flex:1}
 .ok{color:green}.bad{color:red}
+.hint{font-size:13px;color:#555}
 </style>
 </head>
 <body>
@@ -22,21 +23,21 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 <p>最终地址：<code>https://xiuyuan.9527653.xyz/jay_filtered.yaml</code>（由 nginx 静态提供，不经过本服务）</p>
 
 <div class="card" id="status"><h2>运行状态</h2><div class="mono" id="statusText">加载中…</div>
-<button onclick="runNow()">立即执行一次</button>
-<button onclick="reapply()">重新应用规则</button>
-<div id="reapplyMsg" style="font-size:13px;color:#555;margin-top:6px">重新应用规则：用最新的 ini 重新算分组和规则，不重新测纯净度（几秒完成）。只对当前订阅文件里的节点生效；被预过滤或连续失败隐藏的节点，要等下一轮完整执行才会回来；节点名也不改，下一轮完整执行时统一。</div>
-<button onclick="refresh()">刷新状态</button></div>
+<button id="btnRun">立即执行一次</button>
+<button id="btnReapply">重新应用规则</button>
+<div id="reapplyMsg" class="hint" style="margin-top:6px">重新应用规则：用最新的 ini 重新算分组和规则，不重新测纯净度（几秒完成）。只对当前订阅文件里的节点生效；被预过滤或连续失败隐藏的节点，要等下一轮完整执行才会回来；节点名也不改，下一轮完整执行时统一。</div>
+<button id="btnRefresh">刷新状态</button></div>
 
 <div class="card"><h2>订阅源</h2>
 <table><thead><tr><th>ID</th><th>地址（完整显示，含 token）</th><th>启用</th><th>操作</th></tr></thead>
 <tbody id="subs"></tbody></table>
 <h3>新增订阅（只需填一个订阅 URL）</h3>
 <input type="text" id="newUrl" placeholder="https://…">
-<button onclick="addSub()">新增并立即执行</button>
+<button id="btnAddSub">新增并立即执行</button>
 <div id="subMsg"></div></div>
 
 <div class="card"><h2>设置</h2>
-<div class="row"><div><label>执行间隔（秒，≥300）</label><input type="number" id="interval"></div>
+<div class="row"><div><label>执行间隔（秒，300–86400）</label><input type="number" id="interval" min="300" max="86400"></div>
 <div><label>企业微信通知</label><select id="notify"><option value="true">开（成功和失败都发）</option><option value="false">关（不发任何通知）</option></select></div></div>
 <label>企业微信 webhook（留空 = 保持现有值；页面和接口从不回显真实地址）</label>
 <input type="text" id="webhook" placeholder="留空保持不变">
@@ -44,130 +45,195 @@ label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
 <label>转换服务地址</label><input type="text" id="subconv">
 <label>输出文件路径（VPS 上）</label><input type="text" id="output">
 <label><input type="checkbox" id="purity"> 启用纯净度检测（mihomo 逐节点自查；关则全部标记未测，仍保留全部节点）</label>
-<div class="row"><div><label>纯净度检测并行数（1–16；每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4）</label><input type="number" id="workers" min="1" max="16"></div>
-<div><label>静态节点检测前置（仅配置文件可改，页面只显示）</label><div class="mono" id="checkFront">—</div></div></div>
+<label><input type="checkbox" id="delayScreen"> 检测前先做延迟筛选（延迟测试不通过的节点只做 1 次 15 秒的检测，不再重试 3 次；关则每个节点都按 3 次 × 30 秒检测）</label>
+<div class="row"><div><label>纯净度检测并行数（1–8；每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4）</label><input type="number" id="workers" min="1" max="8"></div>
+<div><label>静态节点检测前置（节点本身只能在配置文件里改，页面只显示）</label><div class="mono" id="checkFront">—</div>
+<label><input type="checkbox" id="frontEnabled"> 静态节点检测走前置（默认关：静态节点从 VPS 直连检测）</label></div></div>
 <label><input type="checkbox" id="remote"> 使用远程 subconverter（需另填下方公开合并地址，否则保持本地套用 ini）</label>
 <label>公开的合并中间文件地址（仅远程模式用）</label><input type="text" id="mergedUrl" placeholder="https://…/merged.yaml">
-<button onclick="saveSettings()">保存设置并立即执行</button>
+<button id="btnSave">保存设置并立即执行</button>
+<button id="btnReload">放弃修改，重新载入</button>
 <div id="setMsg"></div></div>
 
 <div class="card"><h2>上次执行结果</h2><div class="mono" id="lastRun">—</div></div>
 
 <div class="card"><h2>末轮失败的订阅源</h2>
-<p style="font-size:13px;color:#555">最近一轮执行中拉取失败的订阅地址（已跳过，用其余源继续跑）。地址完整显示，含 token，仅登录后可见；企业微信通知里只显示成功/总数，不含地址。</p>
+<p class="hint">最近一轮执行中拉取失败的订阅地址（已跳过，用其余源继续跑）。地址完整显示，含 token，仅登录后可见；企业微信通知里只显示成功/总数，不含地址。</p>
 <div class="mono" id="failedSubs">—</div></div>
 
 <div class="card"><h2>过滤规则（只读，来自 ini）</h2>
-<p style="font-size:13px;color:#555">exclude_remarks：名字里出现这些词的节点，在测试之前就被排除，不参与检测。</p>
+<p class="hint">exclude_remarks：名字里出现这些词的节点，在测试之前就被排除，不参与检测。（ini 内容服务端缓存 5 分钟）</p>
 <div class="mono" id="excludeText">加载中…</div>
+<button id="btnIni">重新读取 ini</button>
 <table><thead><tr><th>上轮被过滤的节点</th></tr></thead>
 <tbody id="excludedNames"></tbody></table></div>
 
 <div class="card"><h2>节点可用性记录</h2>
-<p style="font-size:13px;color:#555">连续 3 次检测不可用（测不到）的节点不会出现在订阅里，但每轮仍会测试，下次测到可用时自动恢复。清空记录后，所有节点重新开始计数。</p>
+<p class="hint">连续 3 次检测不可用（测不到）的节点不会出现在订阅里，但每轮仍会测试，下次测到可用时自动恢复。若某一轮超过 60% 的节点都测不到，按检测环境故障处理，这一轮不计失败。清空记录后，所有节点重新开始计数。</p>
 <div class="mono" id="availText">加载中…</div>
 <table><thead><tr><th>节点</th><th>连续失败</th><th>最后检测</th></tr></thead>
 <tbody id="omitted"></tbody></table>
-<button onclick="clearAvail()">清空记录</button>
+<button id="btnClearAvail">清空记录</button>
 <div id="availMsg"></div></div>
 
 <script>
+'use strict';
+const $ = id => document.getElementById(id);
+
 async function api(path, opts){
-  const r = await fetch(path, Object.assign({credentials:'include'}, opts||{}));
+  opts = Object.assign({credentials:'include'}, opts||{});
+  // Required by the server's CSRF guard on mutating /api calls.
+  opts.headers = Object.assign({'X-Requested-With':'XMLHttpRequest'}, opts.headers||{});
+  const r = await fetch(path, opts);
   if(!r.ok){ const t = await r.text(); throw new Error(r.status+' '+t); }
   return r.json();
 }
-async function refresh(){
+function jsonOpts(method, body){
+  return {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
+}
+
+// Table rows built with textContent only: node names, subscription
+// URLs and ini-derived names are untrusted and never parsed as HTML.
+function cell(text){ const td = document.createElement('td'); td.textContent = text==null ? '' : String(text); return td; }
+function button(text, onClick){ const b = document.createElement('button'); b.textContent = text; b.addEventListener('click', onClick); return b; }
+function fillRows(tbody, rows){ tbody.replaceChildren(...rows); }
+function row(...cells){ const tr = document.createElement('tr'); tr.append(...cells); return tr; }
+
+let formLoaded = false;
+let lastRunKey = null;
+
+function fillForm(c){
+  $('interval').value = c.interval_seconds;
+  $('notify').value = String(c.notify_enabled);
+  $('ini').value = c.ini_url||'';
+  $('subconv').value = c.subconverter_base||'';
+  $('output').value = c.output_path||'';
+  $('purity').checked = !!c.purity_enabled;
+  $('delayScreen').checked = c.purity_delay_screen !== false;
+  $('workers').value = c.purity_workers||1;
+  $('frontEnabled').checked = !!c.check_front_enabled;
+  $('remote').checked = !!c.use_remote_subconverter;
+  $('mergedUrl').value = c.merged_public_url||'';
+  formLoaded = true;
+}
+
+async function refresh(forceForm){
   const s = await api('/api/status');
-  document.getElementById('statusText').textContent =
+  $('statusText').textContent =
     '运行中：'+s.running+'\n下次执行：'+(s.next_run||'—')+'\n累计启动：'+s.runs_started+' 轮，重叠跳过：'+s.runs_skipped_overlap+' 次\n'+(s.last_error?'最近错误：'+s.last_error:'');
-  document.getElementById('lastRun').textContent = s.last_run ? JSON.stringify(s.last_run,null,2) : '—';
+  $('lastRun').textContent = s.last_run ? JSON.stringify(s.last_run,null,2) : '—';
   const lr = s.last_run || {};
   const f = lr.sources_failed;
-  document.getElementById('failedSubs').textContent =
+  $('failedSubs').textContent =
     !lr.started_at ? '—' :
     (f === undefined ? '本轮未拉取订阅源（重新应用规则不拉取订阅）。' :
      f.length ? ('时间：'+(lr.finished_at||lr.started_at)+'\n'+f.map(x=>'地址：'+x.url+'\n原因：'+x.error).join('\n\n')) :
      '末轮没有失败的订阅源。');
+
   const c = await api('/api/config');
-  document.getElementById('interval').value = c.interval_seconds;
-  document.getElementById('notify').value = String(c.notify_enabled);
-  document.getElementById('ini').value = c.ini_url||'';
-  document.getElementById('subconv').value = c.subconverter_base||'';
-  document.getElementById('output').value = c.output_path||'';
-  document.getElementById('purity').checked = !!c.purity_enabled;
-  document.getElementById('workers').value = c.purity_workers||1;
+  // Only overwrite the settings form on first load / explicit reload /
+  // after a save — the 30 s auto-refresh must not wipe what the user
+  // is typing.
+  if(!formLoaded || forceForm) fillForm(c);
   const cf = c.check_front||{};
-  document.getElementById('checkFront').textContent = cf.configured ?
-    ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+ (cf.server||'') +':'+(cf.port||'')+'）') :
-    '未配置：静态节点改用订阅里的前置，Bright Data 网关可能拒绝，测不到';
-  document.getElementById('remote').checked = !!c.use_remote_subconverter;
-  document.getElementById('mergedUrl').value = c.merged_public_url||'';
-  document.getElementById('subs').innerHTML = (c.subscriptions||[]).map(s=>
-    '<tr><td>'+s.id+'</td><td>'+(s.url||'')+'</td><td>'+(s.enabled?'是':'否')+'</td>'+
-    '<td><button onclick="toggleSub(\''+s.id+'\','+!s.enabled+')">'+(s.enabled?'停用':'启用')+'</button> '+
-    '<button onclick="delSub(\''+s.id+'\')">删除</button></td></tr>').join('');
+  $('checkFront').textContent = cf.configured ?
+    ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+(cf.server||'')+':'+(cf.port||'')+'）'+(c.check_front_enabled?'，已启用':'，未启用（直连检测）')) :
+    '未配置：静态节点从 VPS 直连检测';
+  fillRows($('subs'), (c.subscriptions||[]).map(sub => row(
+    cell(sub.id), cell(sub.url||''), cell(sub.enabled?'是':'否'),
+    (()=>{ const td = document.createElement('td');
+      td.append(button(sub.enabled?'停用':'启用', ()=>toggleSub(sub.id, !sub.enabled)), ' ',
+                button('删除', ()=>delSub(sub.id)));
+      return td; })())));
+
   const a = await api('/api/availability');
-  document.getElementById('availText').textContent =
+  $('availText').textContent =
     '已记录节点：'+a.tracked+' 个，其中当前不输出：'+(a.omitted||[]).length+' 个';
-  document.getElementById('omitted').innerHTML = (a.omitted||[]).map(o=>
-    '<tr><td>'+o.name+'</td><td>'+o.fails+'</td><td>'+(o.last_seen||'')+'</td></tr>').join('');
-  try{
-    const ini = await api('/api/ini');
-    if(ini.ok){
-      document.getElementById('excludeText').textContent = ini.exclude_remarks||'（ini 里没有 exclude_remarks）';
-      document.getElementById('excludedNames').innerHTML = (ini.prefilter_excluded_names||[]).map(n=>
-        '<tr><td>'+n+'</td></tr>').join('') ||
-        '<tr><td>上轮没有过滤掉节点（'+(ini.prefilter_excluded||0)+' 个）</td></tr>';
-    }else{
-      document.getElementById('excludeText').textContent = '获取 ini 失败：'+(ini.error||'');
-    }
-  }catch(e){ document.getElementById('excludeText').textContent = '获取 ini 失败：'+e.message; }
+  fillRows($('omitted'), (a.omitted||[]).map(o => row(cell(o.name), cell(o.fails), cell(o.last_seen||''))));
+
+  // The exclude list only changes when a round finishes or the ini
+  // changes: reload it then, not on every 30 s tick.
+  const key = (lr.finished_at||'')+'|'+(c.ini_url||'');
+  if(key !== lastRunKey){ lastRunKey = key; loadIni(false); }
 }
+
+async function loadIni(force){
+  try{
+    const ini = await api('/api/ini'+(force?'?refresh=1':''));
+    if(ini.ok){
+      $('excludeText').textContent = ini.exclude_remarks||'（ini 里没有 exclude_remarks）';
+      const names = ini.prefilter_excluded_names||[];
+      fillRows($('excludedNames'), names.length ? names.map(n => row(cell(n))) :
+        [row(cell('上轮没有过滤掉节点（'+(ini.prefilter_excluded||0)+' 个）'))]);
+    }else{
+      $('excludeText').textContent = '获取 ini 失败：'+(ini.error||'');
+    }
+  }catch(e){ $('excludeText').textContent = '获取 ini 失败：'+e.message; }
+}
+
+function startedMsg(r, what){
+  return r.run_started ? (what+'，正在执行一轮。') : (what+'。'+(r.note||'当前已有一轮在执行，改动从下一轮生效。'));
+}
+
 async function clearAvail(){ if(!confirm('清空全部可用性记录？当前不输出的节点将在下一轮重新开始计数。')) return;
   try{ const r = await api('/api/availability/clear',{method:'POST'});
-    document.getElementById('availMsg').textContent='已清空 '+r.cleared+' 条记录。'; refresh();
-  }catch(e){ document.getElementById('availMsg').textContent='失败：'+e.message; } }
+    $('availMsg').textContent='已清空 '+r.cleared+' 条记录。'; refresh();
+  }catch(e){ $('availMsg').textContent='失败：'+e.message; } }
 async function addSub(){
-  const url = document.getElementById('newUrl').value.trim();
+  const url = $('newUrl').value.trim();
   if(!url) return;
-  try{ await api('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
-    document.getElementById('subMsg').textContent='已新增，正在按新列表执行一轮。'; document.getElementById('newUrl').value=''; refresh();
-  }catch(e){ document.getElementById('subMsg').textContent='失败：'+e.message; }
+  try{ const r = await api('/api/subscriptions', jsonOpts('POST', {url}));
+    $('subMsg').textContent = startedMsg(r, '已新增'); $('newUrl').value=''; refresh();
+  }catch(e){ $('subMsg').textContent='失败：'+e.message; }
 }
 async function delSub(id){ if(!confirm('删除该订阅源？将立即按新列表执行一轮。')) return;
-  await api('/api/subscriptions/'+id,{method:'DELETE'}); refresh(); }
+  try{ const r = await api('/api/subscriptions/'+encodeURIComponent(id),{method:'DELETE'});
+    $('subMsg').textContent = startedMsg(r, '已删除'); refresh();
+  }catch(e){ $('subMsg').textContent='失败：'+e.message; } }
 async function toggleSub(id, enabled){
-  await api('/api/subscriptions/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}); refresh(); }
+  try{ const r = await api('/api/subscriptions/'+encodeURIComponent(id), jsonOpts('PATCH', {enabled}));
+    $('subMsg').textContent = startedMsg(r, enabled?'已启用':'已停用'); refresh();
+  }catch(e){ $('subMsg').textContent='失败：'+e.message; } }
 async function saveSettings(){
-  const body = {interval_seconds: parseInt(document.getElementById('interval').value,10),
-    notify_enabled: document.getElementById('notify').value==='true',
-    ini_url: document.getElementById('ini').value.trim(),
-    subconverter_base: document.getElementById('subconv').value.trim(),
-    output_path: document.getElementById('output').value.trim(),
-    purity_enabled: document.getElementById('purity').checked,
-    purity_workers: parseInt(document.getElementById('workers').value,10)||1,
-    use_remote_subconverter: document.getElementById('remote').checked,
-    merged_public_url: document.getElementById('mergedUrl').value.trim()};
-  const w = document.getElementById('webhook').value.trim();
+  const body = {interval_seconds: parseInt($('interval').value,10),
+    notify_enabled: $('notify').value==='true',
+    ini_url: $('ini').value.trim(),
+    subconverter_base: $('subconv').value.trim(),
+    output_path: $('output').value.trim(),
+    purity_enabled: $('purity').checked,
+    purity_delay_screen: $('delayScreen').checked,
+    purity_workers: parseInt($('workers').value,10)||1,
+    check_front_enabled: $('frontEnabled').checked,
+    use_remote_subconverter: $('remote').checked,
+    merged_public_url: $('mergedUrl').value.trim()};
+  const w = $('webhook').value.trim();
   if(w) body.wechat_webhook = w;
-  try{ await api('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    document.getElementById('setMsg').textContent='已保存，正在按新配置执行一轮。'; refresh();
-  }catch(e){ document.getElementById('setMsg').textContent='保存失败：'+e.message; }
+  try{ const r = await api('/api/config', jsonOpts('PUT', body));
+    $('setMsg').textContent = startedMsg(r, '已保存'); $('webhook').value=''; refresh(true);
+  }catch(e){ $('setMsg').textContent='保存失败：'+e.message; }
 }
 async function runNow(){ try{ const r = await api('/api/run',{method:'POST'}); alert(r.ok?'已启动一轮。':'未启动：'+(r.error||'')); refresh(); }catch(e){ alert('失败：'+e.message); } }
-async function reapply(){ const m = document.getElementById('reapplyMsg');
+async function reapply(){ const m = $('reapplyMsg');
   m.textContent='正在重新应用规则…';
   try{ const r = await api('/api/reapply',{method:'POST'});
     if(!r.ok){ m.textContent='未启动：'+(r.error||''); return; }
-    for(let i=0;i<20;i++){ await new Promise(r=>setTimeout(r,1000));
+    for(let i=0;i<20;i++){ await new Promise(res=>setTimeout(res,1000));
       const s = await api('/api/status');
       if(!s.running){ const lr = s.last_run||{};
-        m.textContent = lr.ok ? ('已应用：'+(lr.proxies_out||'?')+' 个节点，低纯净分组 '+ (lr.low_purity_members||0) +' 个，用时 '+(lr.duration_seconds||'?')+' 秒。') : ('失败（'+(lr.failed_step||'')+'）：'+(lr.error||''));
+        m.textContent = lr.ok ? ('已应用：'+(lr.proxies_out||'?')+' 个节点，低纯净分组 '+(lr.low_purity_members||0)+' 个，用时 '+(lr.duration_seconds||'?')+' 秒。') : ('失败（'+(lr.failed_step||'')+'）：'+(lr.error||''));
         refresh(); return; } }
     m.textContent='还在执行，请稍后刷新页面查看结果。';
   }catch(e){ m.textContent='失败：'+e.message; } }
-refresh(); setInterval(refresh, 30000);
+
+$('btnRun').addEventListener('click', runNow);
+$('btnReapply').addEventListener('click', reapply);
+$('btnRefresh').addEventListener('click', ()=>refresh());
+$('btnAddSub').addEventListener('click', addSub);
+$('btnSave').addEventListener('click', saveSettings);
+$('btnReload').addEventListener('click', ()=>refresh(true));
+$('btnIni').addEventListener('click', ()=>loadIni(true));
+$('btnClearAvail').addEventListener('click', clearAvail);
+refresh(); setInterval(()=>refresh(), 30000);
 </script>
 </body>
 </html>

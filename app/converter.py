@@ -38,6 +38,7 @@ Ini facts verified 2026-11-12 (live fetch of the ini):
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -50,9 +51,25 @@ from app.fetcher import FetchError
 
 log = logging.getLogger(__name__)
 
-KNOWN_DIRECTIVES = ("[", ";", "ruleset=", "custom_proxy_group=",
+KNOWN_DIRECTIVES = ("[", ";", "#", "ruleset=", "custom_proxy_group=",
                     "enable_rule_generator=", "overwrite_original_rules=",
                     "clash_rule_base=", "exclude_remarks=")
+# Any "key=" line (ASCII identifier) starts a new logical line, even
+# directives this parser does not know (e.g. ``add_emoji=``,
+# ``rename_node=``) — they must never be glued onto the previous line.
+_DIRECTIVE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# subconverter ruleset URL prefixes -> (behavior, format) of the
+# resulting Mihomo rule-provider. A plain URL is a Surge-style
+# classical list (plain text).
+RULESET_PREFIXES = {
+    "clash-domain:": ("domain", "yaml"),
+    "clash-ipcidr:": ("ipcidr", "yaml"),
+    "clash-classic:": ("classical", "yaml"),
+    "surge:": ("classical", "text"),
+}
+# Group types that need a health-check url/interval in Mihomo.
+_TESTED_GROUP_TYPES = ("url-test", "fallback", "load-balance")
 
 
 @dataclass
@@ -70,11 +87,13 @@ class IniGroup:
 @dataclass
 class IniRuleset:
     group: str
-    kind: str  # http | geosite | geoip | final
+    kind: str  # http | geosite | geoip | final | inline
     url: str = ""
     arg: str = ""
     no_resolve: bool = False
     interval: int = 3600
+    behavior: str = "classical"
+    fmt: str = "text"
 
 
 @dataclass
@@ -88,15 +107,20 @@ class IniData:
 
 
 def join_logical_lines(text: str) -> list[str]:
-    """Re-join ini lines split mid-value (group names spanning lines)."""
+    """Re-join ini lines split mid-value (group names spanning lines).
+
+    A physical line is a continuation of the previous one only if it
+    is not blank, not a comment (``;`` / ``#``), not a section header
+    and does not look like a ``key=`` directive."""
     logical: list[str] = []
     for raw in text.splitlines():
         line = raw.rstrip()
         if not line.strip():
             continue
         stripped = line.lstrip()
-        starts_directive = stripped.startswith(KNOWN_DIRECTIVES)
-        if logical and not starts_directive and not stripped.startswith("["):
+        starts_new = (stripped.startswith(KNOWN_DIRECTIVES)
+                      or bool(_DIRECTIVE_RE.match(stripped)))
+        if logical and not starts_new:
             # Continuation of the previous logical line (a split name).
             logical[-1] += stripped
         else:
@@ -113,18 +137,67 @@ def _classify_field(group: IniGroup, f: str) -> None:
         group.policies.append(f)
     elif f.startswith("http://") or f.startswith("https://"):
         group.url = f
-    elif re.fullmatch(r"\d+,\d+(,\d+)?", f):
-        nums = [int(x) for x in f.split(",")]
-        group.interval = nums[0]
-        group.tolerance = nums[-1]
+    elif re.fullmatch(r"\d+(,\d*){0,2}", f):
+        # interval[,timeout][,tolerance]; empty slots allowed ("300,,50").
+        # Two fields = interval,timeout (subconverter order): the
+        # timeout is NOT a tolerance, tolerance keeps its default.
+        nums = f.split(",")
+        group.interval = int(nums[0])
+        if len(nums) == 3 and nums[2]:
+            group.tolerance = int(nums[2])
     elif f:
         group.regexes.append(f)
+
+
+def _parse_ruleset(body: str) -> IniRuleset | None:
+    parts = [p.strip() for p in body.split(",")]
+    if len(parts) < 2:
+        return None
+    group, second = parts[0], parts[1]
+    if second.startswith("[]"):
+        kind_arg = second[2:]
+        upper = kind_arg.upper()
+        if upper == "GEOSITE" or upper == "GEO-SITE":
+            return IniRuleset(group=group, kind="geosite",
+                              arg=parts[2] if len(parts) > 2 else "")
+        if upper == "GEOIP" or upper == "GEO-IP":
+            return IniRuleset(group=group, kind="geoip",
+                              arg=parts[2] if len(parts) > 2 else "",
+                              no_resolve="no-resolve" in parts)
+        if upper in ("FINAL", "MATCH"):
+            return IniRuleset(group=group, kind="final")
+        if not kind_arg:
+            return None
+        # Inline rule, e.g. "[]DOMAIN-SUFFIX,example.com" or
+        # "[]IP-CIDR,1.2.3.0/24,no-resolve" -> "TYPE,arg,GROUP[,no-resolve]".
+        args = [p for p in parts[2:] if p and p != "no-resolve"]
+        return IniRuleset(group=group, kind="inline", url=kind_arg,
+                          arg=",".join(args),
+                          no_resolve="no-resolve" in parts[2:])
+    url = second
+    behavior, fmt = "classical", "text"
+    for prefix, (b, f) in RULESET_PREFIXES.items():
+        if url.startswith(prefix):
+            url = url[len(prefix):]
+            behavior, fmt = b, f
+            break
+    if not (url.startswith("http://") or url.startswith("https://")):
+        log.warning("converter: unsupported ruleset source %r, skipped", second)
+        return None
+    interval = 3600
+    if len(parts) > 2:
+        try:
+            interval = int(parts[2])
+        except ValueError:
+            pass
+    return IniRuleset(group=group, kind="http", url=url, interval=interval,
+                      behavior=behavior, fmt=fmt)
 
 
 def parse_ini(text: str) -> IniData:
     ini = IniData()
     for line in join_logical_lines(text):
-        if line.startswith(";") or line.startswith("["):
+        if line.startswith((";", "#", "[")):
             continue
         if line.startswith("custom_proxy_group="):
             body = line[len("custom_proxy_group="):]
@@ -137,33 +210,9 @@ def parse_ini(text: str) -> IniData:
                 _classify_field(group, f.strip())
             ini.groups.append(group)
         elif line.startswith("ruleset="):
-            body = line[len("ruleset="):]
-            parts = [p.strip() for p in body.split(",")]
-            if len(parts) < 2:
-                continue
-            group, second = parts[0], parts[1]
-            if second.startswith("[]"):
-                kind_arg = second[2:]
-                if kind_arg.upper().startswith("GEOSITE"):
-                    ini.rulesets.append(IniRuleset(
-                        group=group, kind="geosite",
-                        arg=parts[2] if len(parts) > 2 else ""))
-                elif kind_arg.upper().startswith("GEOIP"):
-                    ini.rulesets.append(IniRuleset(
-                        group=group, kind="geoip",
-                        arg=parts[2] if len(parts) > 2 else "",
-                        no_resolve="no-resolve" in parts))
-                elif kind_arg.upper().startswith("FINAL"):
-                    ini.rulesets.append(IniRuleset(group=group, kind="final"))
-            else:
-                interval = 3600
-                if len(parts) > 2:
-                    try:
-                        interval = int(parts[2])
-                    except ValueError:
-                        pass
-                ini.rulesets.append(IniRuleset(group=group, kind="http",
-                                               url=second, interval=interval))
+            rs = _parse_ruleset(line[len("ruleset="):])
+            if rs is not None:
+                ini.rulesets.append(rs)
         elif line.startswith("exclude_remarks="):
             val = line[len("exclude_remarks="):].strip()
             if val.startswith("(") and val.endswith(")"):
@@ -178,7 +227,23 @@ def parse_ini(text: str) -> IniData:
     return ini
 
 
-def apply_exclude(proxies: list[dict], ini: IniData) -> tuple[list[dict], int]:
+_SCORE_PREFIX = re.compile(r"^\d+% ")
+_DUP_SUFFIX = re.compile(r" \(\d+\)$")
+
+
+def exclude_match_name(name: str) -> str:
+    """The name exclude_remarks is matched against: the NORMALIZED
+    display name without the purity score prefix ("5% ") and the
+    de-dup suffix (" (2)"). The pipeline's pre-filter matches the
+    normalized name of each raw node (see pipeline.py), and the
+    converter / reapply match final names through this function, so
+    all three paths see the same string — an exclude word like
+    "美国" or a ``^`` anchor gives the same result everywhere."""
+    return _DUP_SUFFIX.sub("", _SCORE_PREFIX.sub("", name))
+
+
+def apply_exclude(proxies: list[dict], ini: IniData,
+                  name_of=None) -> tuple[list[dict], int]:
     if not ini.exclude_regex:
         return proxies, 0
     try:
@@ -186,7 +251,10 @@ def apply_exclude(proxies: list[dict], ini: IniData) -> tuple[list[dict], int]:
     except re.error as e:
         log.warning("converter: bad exclude_remarks regex: %s", e)
         return proxies, 0
-    kept = [p for p in proxies if not rx.search(str(p.get("name", "")))]
+    if name_of is None:
+        def name_of(p):
+            return exclude_match_name(str(p.get("name", "")))
+    kept = [p for p in proxies if not rx.search(name_of(p))]
     return kept, len(proxies) - len(kept)
 
 
@@ -221,36 +289,48 @@ def build_proxy_groups(proxies: list[dict], ini: IniData) -> list[dict]:
         if not members:
             members = ["REJECT"]
         entry: dict = {"name": g.name, "type": g.type, "proxies": members}
-        if g.type == "url-test":
+        if g.type in _TESTED_GROUP_TYPES:
             entry["url"] = g.url or "https://cp.cloudflare.com/generate_204"
             entry["interval"] = g.interval
-            entry["tolerance"] = g.tolerance
+            if g.type == "url-test":
+                entry["tolerance"] = g.tolerance
         groups.append(entry)
     return groups
 
 
-def build_rules(ini: IniData) -> tuple[list[dict], list[str]]:
+def _provider_key(url: str) -> str:
+    """Stable provider name derived from the URL: inserting or
+    reordering rulesets in the ini no longer renames every provider
+    (and re-downloads every list on the clients), and the same URL
+    used twice maps to one provider."""
+    return "rs-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
+
+
+def build_rules(ini: IniData) -> tuple[dict, list[str]]:
     """Returns (rule_providers, rules)."""
     providers: dict[str, dict] = {}
     rules: list[str] = []
-    counter = 0
     for rs in ini.rulesets:
         if rs.kind == "http":
-            key = f"provider-{counter}"
-            counter += 1
-            providers[key] = {
-                "type": "http", "behavior": "classical",
-                # The lists are plain-text (one rule per line). Without
-                # this, Mihomo parses the file as YAML by default and
-                # silently loads 0 rules — every RULE-SET then matches
-                # nothing and traffic falls through to MATCH (this is
-                # why chatgpt.com went to 🚀 手动选择 instead of
-                # 🤖 国外AI: it is only in the ACL AI.list, provider-1).
-                "format": "text",
-                "url": rs.url, "path": f"./rules/{key}.list",
+            key = _provider_key(rs.url)
+            providers.setdefault(key, {
+                "type": "http", "behavior": rs.behavior,
+                # Plain URLs are plain-text lists (one rule per line).
+                # Without "format: text", Mihomo parses the file as
+                # YAML by default and silently loads 0 rules — every
+                # RULE-SET then matches nothing and traffic falls
+                # through to MATCH. clash-*: prefixed sources are
+                # Clash YAML providers (format yaml).
+                "format": rs.fmt,
+                "url": rs.url,
+                "path": f"./rules/{key}.{'list' if rs.fmt == 'text' else 'yaml'}",
                 "interval": rs.interval,
-            }
+            })
             rules.append(f"RULE-SET,{key},{rs.group}")
+        elif rs.kind == "inline":
+            suffix = ",no-resolve" if rs.no_resolve else ""
+            mid = f",{rs.arg}" if rs.arg else ""
+            rules.append(f"{rs.url}{mid},{rs.group}{suffix}")
         elif rs.kind == "geosite":
             # Mihomo calls this rule type GEOSITE (no hyphen); the
             # Clash Premium / subconverter spelling GEO-SITE is rejected
@@ -279,17 +359,24 @@ FALLBACK_BASE: dict = {
 
 
 async def fetch_base(client: httpx.AsyncClient, ini: IniData) -> dict:
+    """The ini's clash_rule_base template. Without a base_url the
+    minimal FALLBACK_BASE is used. If a base_url IS configured but
+    cannot be fetched/parsed, the run fails (FetchError "convert")
+    instead of silently publishing a config built on the fallback
+    (different DNS / ports / sniffer than the user's template) — the
+    last good file is kept."""
     if not ini.base_url:
         return dict(FALLBACK_BASE)
     try:
         resp = await client.get(ini.base_url, timeout=30)
         resp.raise_for_status()
         base = yaml.safe_load(resp.text)
-        if isinstance(base, dict):
-            return base
-    except Exception as e:  # noqa: BLE001 - fallback base on any failure
-        log.warning("converter: base template fetch failed (%s), using fallback", e)
-    return dict(FALLBACK_BASE)
+    except Exception as e:  # noqa: BLE001 - reported as a convert failure
+        raise FetchError("convert", f"clash_rule_base fetch failed: "
+                         f"{type(e).__name__}: {e}"[:300]) from e
+    if not isinstance(base, dict):
+        raise FetchError("convert", "clash_rule_base is not a YAML mapping")
+    return base
 
 
 def normalize_rule_types(doc: dict) -> dict:
@@ -354,12 +441,20 @@ async def remote_convert(merged_yaml_text: str, ini_url: str,
     url = (subconverter_base + "sub?target=clash"
            f"&url={quote(merged_public_url, safe='')}"
            f"&config={quote(ini_url, safe='')}")
-    resp = await client.get(url, timeout=120)
+    try:
+        resp = await client.get(url, timeout=120)
+    except httpx.HTTPError as e:
+        raise FetchError("convert", f"subconverter request failed: "
+                         f"{type(e).__name__}: {e}"[:300]) from e
     if resp.status_code != 200:
         raise FetchError("convert",
                          f"subconverter HTTP {resp.status_code}: "
                          f"{resp.text[:200]}")
-    doc = yaml.safe_load(resp.text)
+    try:
+        doc = yaml.safe_load(resp.text)
+    except yaml.YAMLError as e:
+        raise FetchError("convert", f"subconverter returned invalid YAML: "
+                         f"{e}"[:300]) from e
     if not isinstance(doc, dict) or not doc.get("proxies"):
         raise FetchError("convert", "subconverter returned no proxies")
     # The remote service emits Clash Premium spellings (GEO-SITE /
