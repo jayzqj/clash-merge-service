@@ -245,7 +245,7 @@ class PipelineTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("纯净度过滤：开启（≤15%）", message)
         self.assertIn("执行间隔：120 分钟", message)
         self.assertIn(f"下次执行时间：{report['next_run']}（北京时间）", message)
-        self.assertRegex(message, r"用时：\d+(?:\.\d+)? 分钟")
+        self.assertRegex(message, r"本轮用时：\d+(?:\.\d+)? 分钟")
         self.assertIn("后置节点：0 个\n", message)
         for removed in ("TCP", "UDP", "dialer-proxy", "发送方", " 秒"):
             self.assertNotIn(removed, message)
@@ -266,7 +266,7 @@ class PipelineTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("纯净度过滤：关闭（配置值：12.5%）", message)
         self.assertIn("执行间隔：60 分钟", message)
         self.assertIn(f"下次执行时间：{state.next_run}（北京时间）", message)
-        self.assertRegex(message, r"用时：\d+(?:\.\d+)? 分钟")
+        self.assertRegex(message, r"本轮用时：\d+(?:\.\d+)? 分钟")
         self.assertNotIn("发送方", message)
 
     def test_guard_still_rejects_unexpected_empty_and_source_collapse(self):
