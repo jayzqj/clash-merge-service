@@ -162,11 +162,13 @@ class SettingsIn(BaseModel):
 
 class SubscriptionIn(BaseModel):
     url: str = Field(min_length=8)
+    name: str = Field(default="", max_length=100)
 
 
 class SubscriptionPatch(BaseModel):
     enabled: bool | None = None
     url: str | None = None
+    name: str | None = Field(default=None, max_length=100)
 
 
 def _changed_response(**extra) -> dict:
@@ -232,7 +234,8 @@ async def api_add_subscription(body: SubscriptionIn,
     if any(s.get("url") == url for s in cfg.subscriptions):
         raise HTTPException(status_code=400, detail="subscription already exists")
     cfg.data.setdefault("subscriptions", []).append(
-        {"id": cfg.new_subscription_id(), "url": url, "enabled": True})
+        {"id": cfg.new_subscription_id(), "url": url,
+         "name": body.name.strip(), "enabled": True})
     cfg.save()
     reschedule(_state(), cfg)
     return _changed_response()
@@ -269,7 +272,13 @@ async def api_patch_subscription(sub_id: str, body: SubscriptionPatch,
         target["url"] = url
     if body.enabled is not None:
         target["enabled"] = body.enabled
+    if body.name is not None:
+        target["name"] = body.name.strip()
     cfg.save()
+    # A display-name edit changes no pipeline inputs or schedule.
+    if body.url is None and body.enabled is None:
+        return {"ok": True, "run_started": False,
+                "next_run": _state().next_run}
     reschedule(_state(), cfg)
     return _changed_response()
 

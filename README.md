@@ -49,7 +49,7 @@ deploy/
 
 | 字段 | 说明 |
 | --- | --- |
-| `subscriptions[]` | `{id, url, enabled}`；新增只需一个 URL；地址绝不写死在代码里 |
+| `subscriptions[]` | `{id, url, enabled, name?}`；新增必须填写 URL，名称可选（最多 100 字符）；列表支持编辑或清空名称，仅修改名称不触发执行或改变计划时间；旧配置无名称时显示“未命名”；地址绝不写死在代码里 |
 | `interval_seconds` | 默认 3600；最小值 `min_interval_seconds`（默认 300，一轮纯净度检测要几十分钟），最大 86400（一天） |
 | `notify_enabled` | 企业微信总开关；开 = 成功和失败都发，关 = 一条不发；只节点变化不发 |
 | `wechat_webhook` | 沿用之前任务的企业微信 webhook（只放配置文件里） |

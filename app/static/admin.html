@@ -130,7 +130,10 @@ td.nowrap,td.actions,td.when{white-space:nowrap;overflow-wrap:normal}
 td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 td.url{color:var(--ink-2)}
 td.empty{padding:14px 10px}
-.btn-row{display:flex;gap:6px}
+.btn-row{display:flex;flex-wrap:wrap;gap:6px}
+.source-name{min-width:120px;max-width:200px}
+.source-title{font-weight:600;overflow-wrap:anywhere}
+.source-id{color:var(--ink-3);font:11px var(--mono);overflow-wrap:anywhere;margin-top:3px}
 
 /* ---- controls ---- */
 .btn{font:inherit;font-size:13px;color:var(--ink);background:#14213a;border:1px solid var(--line-hi);border-radius:7px;
@@ -277,11 +280,25 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:none;border
   <div class="ph"><span class="tag">02 SOURCES</span><h2>订阅源</h2><span class="meta" id="subCount"></span></div>
   <div class="pb">
     <div class="scroll" role="region" aria-label="订阅源列表" tabindex="0">
-      <table id="subsTable"><thead><tr><th>ID</th><th>地址（完整显示，含 token）</th><th>状态</th><th>操作</th></tr></thead>
+      <table id="subsTable"><thead><tr><th>名称 / ID</th><th>地址（完整显示，含 token）</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="subs"></tbody></table>
     </div>
+    <div id="nameEditor" class="readout" hidden>
+      <div class="f">
+        <label for="editName" id="editNameLabel">编辑订阅名称（非必填，最多 100 字符）</label>
+        <div class="add-row"><input type="text" id="editName" maxlength="100" placeholder="留空表示未命名" autocomplete="off">
+          <div class="actions-row"><button type="button" class="btn primary" id="btnSaveName">保存名称</button>
+            <button type="button" class="btn" id="btnCancelName">取消</button></div>
+        </div>
+      </div>
+      <div id="nameMsg" class="msg" aria-live="polite"></div>
+    </div>
     <div class="f">
-      <label for="newUrl">新增订阅（只需填一个订阅 URL）</label>
+      <label for="newName">订阅名称（非必填，最多 100 字符）</label>
+      <input type="text" id="newName" maxlength="100" placeholder="例如：主用机场、备用订阅" autocomplete="off">
+    </div>
+    <div class="f">
+      <label for="newUrl">新增订阅 URL（必填）</label>
       <div class="add-row"><input type="text" id="newUrl" placeholder="https://…" autocomplete="off" spellcheck="false">
       <button type="button" class="btn" id="btnAddSub">新增并立即执行</button></div>
     </div>
@@ -464,6 +481,7 @@ function changed(key, data){
 let formLoaded = false;
 let lastRunKey = null;
 let fastTimer = null;
+let editingSubId = null;
 
 function fillForm(c){
   $('webhook').value = '';
@@ -600,15 +618,22 @@ function renderConfig(c){
     ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+(cf.server||'')+':'+(cf.port||'')+'）'+(c.check_front_enabled?'，已启用':'，未启用（直连检测）')) :
     '未配置：静态节点从 VPS 直连检测';
   const subs = c.subscriptions||[];
+  if(editingSubId && !subs.some(sub => sub.id === editingSubId)){
+    closeNameEditor();
+    say($('subMsg'), '正在编辑的订阅源已被删除。', 'info');
+  }
   $('subCount').textContent = subs.filter(x => x.enabled).length+' / '+subs.length+' 启用';
   if(!changed('subs', subs)) return;
   fillRows($('subs'), subs.length ? subs.map(sub => {
     const st = el('td', 'nowrap'); st.append(pill(sub.enabled ? 'ok' : 'off', sub.enabled ? '启用' : '停用'));
     const act = el('td', 'actions'), wrap = el('div', 'btn-row');
-    wrap.append(button(sub.enabled ? '停用' : '启用', () => toggleSub(sub.id, !sub.enabled), null, (sub.enabled ? '停用 ' : '启用 ')+sub.id),
+    wrap.append(button('编辑名称', () => editSubName(sub), null, '编辑名称 '+sub.id),
+                button(sub.enabled ? '停用' : '启用', () => toggleSub(sub.id, !sub.enabled), null, (sub.enabled ? '停用 ' : '启用 ')+sub.id),
                 button('删除', () => delSub(sub.id), 'btn sm danger', '删除 '+sub.id));
     act.append(wrap);
-    return row(cell(sub.id, 'mono nowrap'), cell(sub.url||'', 'mono url'), st, act);
+    const name = el('td', 'source-name');
+    name.append(el('div', 'source-title', sub.name||'未命名'), el('div', 'source-id', sub.id));
+    return row(name, cell(sub.url||'', 'mono url'), st, act);
   }) : [emptyRow('还没有订阅源。', 4)]);
 }
 
@@ -708,10 +733,38 @@ async function clearAvail(){ if(!confirm('清空全部可用性记录？当前�
   }catch(e){ say($('availMsg'), '失败：'+e.message, 'bad'); } }
 async function addSub(){
   const url = $('newUrl').value.trim();
-  if(!url) return;
-  try{ const r = await api('/api/subscriptions', jsonOpts('POST', {url}));
-    say($('subMsg'), startedMsg(r, '已新增'), 'ok'); $('newUrl').value=''; tick();
+  const name = $('newName').value.trim();
+  if(!url){ say($('subMsg'), '请填写订阅 URL。', 'bad'); $('newUrl').focus(); return; }
+  try{ const r = await api('/api/subscriptions', jsonOpts('POST', {url, name}));
+    say($('subMsg'), startedMsg(r, '已新增'), 'ok'); $('newUrl').value=''; $('newName').value=''; await tick();
   }catch(e){ say($('subMsg'), '失败：'+e.message, 'bad'); }
+}
+function editSubName(sub){
+  if($('btnSaveName').getAttribute('aria-disabled') === 'true') return;
+  editingSubId = sub.id;
+  $('editNameLabel').textContent = '编辑订阅名称 · '+sub.id+'（非必填，最多 100 字符）';
+  $('editName').value = sub.name||'';
+  say($('nameMsg'), '');
+  $('nameEditor').hidden = false;
+  $('editName').focus();
+}
+function closeNameEditor(){
+  editingSubId = null;
+  $('nameEditor').hidden = true;
+  $('editName').value = '';
+  say($('nameMsg'), '');
+}
+async function saveSubName(){
+  const id = editingSubId;
+  if(!id) return;
+  const name = $('editName').value.trim();
+  try{
+    await api('/api/subscriptions/'+encodeURIComponent(id), jsonOpts('PATCH', {name}));
+    closeNameEditor();
+    say($('subMsg'), name ? '名称已保存。' : '名称已清空。', 'ok');
+    $('btnRefresh').focus();
+    await tick();
+  }catch(e){ say($('nameMsg'), '保存失败：'+e.message, 'bad'); }
 }
 async function delSub(id){ if(!confirm('删除该订阅源？将立即按新列表执行一轮。')) return;
   try{ const r = await api('/api/subscriptions/'+encodeURIComponent(id),{method:'DELETE'});
@@ -777,6 +830,12 @@ guard($('btnRun'), runNow);
 guard($('btnReapply'), reapply);
 guard($('btnRefresh'), () => tick());
 guard($('btnAddSub'), addSub);
+guard($('btnSaveName'), saveSubName);
+guard($('btnCancelName'), () => {
+  if($('btnSaveName').getAttribute('aria-disabled') === 'true') return;
+  closeNameEditor();
+  $('btnRefresh').focus();
+});
 guard($('btnSave'), saveSettings);
 guard($('btnReload'), reloadForm);
 guard($('btnIni'), () => loadIni(true));
