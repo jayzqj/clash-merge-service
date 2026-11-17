@@ -4,105 +4,469 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Clash 合并订阅 · 管理</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230c1422'/%3E%3Cpath d='M9 12h14M9 20h8' stroke='%2335c8f4' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
-body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#222}
-h1{font-size:20px}h2{font-size:16px;margin-top:28px}
-.card{border:1px solid #ddd;border-radius:8px;padding:14px;margin:10px 0}
-table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eee;padding:6px 4px;text-align:left;font-size:13px;word-break:break-all}
-input[type=text],input[type=number]{width:100%;padding:6px;box-sizing:border-box}
-button{padding:6px 14px;margin:4px 4px 4px 0;cursor:pointer}
-.mono{font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all}
-label{display:block;margin:8px 0 2px;font-size:13px;color:#555}
-.row{display:flex;gap:12px}.row>div{flex:1}
-.ok{color:green}.bad{color:red}
-.hint{font-size:13px;color:#555}
+:root{
+  color-scheme:dark;
+  --bg:#060a12;--panel:#0c1422;--panel-hi:#111b2d;--field:#070d18;--thead:#0f1829;
+  --line:#1e2c45;--line-hi:#2b3f61;--edge:#46639a;
+  --ink:#e8eef8;--ink-2:#b3bfd4;--ink-3:#8794ad;
+  --accent:#35c8f4;--accent-hi:#86dffa;--accent-ink:#031019;--track:#173f56;
+  --good:#0ca30c;--warn:#fab219;--bad-hi:#e86a6a;--bad-text:#ff9c9c;
+  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"Cascadia Code","SF Mono",Consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace;
+  --r:10px;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;color:var(--ink);font:14px/1.55 var(--sans);-webkit-text-size-adjust:100%}
+/* backdrop: two soft glows over a faint 32px grid */
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(1100px 480px at 12% -8%,rgba(53,200,244,.13),transparent 62%),
+    radial-gradient(900px 420px at 100% 0,rgba(98,80,214,.10),transparent 60%),
+    linear-gradient(rgba(53,200,244,.035) 1px,transparent 1px) 0 0/32px 32px,
+    linear-gradient(90deg,rgba(53,200,244,.035) 1px,transparent 1px) 0 0/32px 32px}
+.wrap{max-width:1560px;margin:0 auto;padding:18px 24px 48px}
+:focus-visible{outline:2px solid var(--accent-hi);outline-offset:2px}
+code,.mono{font-family:var(--mono);font-size:12px}
+
+/* ---- top bar ---- */
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{width:34px;height:34px;border-radius:9px;border:1px solid var(--accent);position:relative;flex:none;
+  background:linear-gradient(135deg,rgba(53,200,244,.28),rgba(53,200,244,.04));box-shadow:0 0 18px rgba(53,200,244,.35)}
+.logo::before,.logo::after{content:"";position:absolute;left:8px;height:2px;background:var(--accent-hi);border-radius:2px}
+.logo::before{top:11px;right:8px}.logo::after{top:19px;right:14px}
+h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.02em}
+.brand-sub{font:11px var(--mono);color:var(--ink-3);letter-spacing:.14em}
+.addr{flex:1 1 380px;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;
+  border:1px solid var(--line);border-radius:var(--r);background:rgba(12,20,34,.8);padding:7px 10px 7px 12px}
+.addr-label{display:flex;flex-direction:column;font-size:12px;line-height:1.35;color:var(--ink-2)}
+.addr-label small{font-size:11px}
+.addr code{flex:1 1 240px;min-width:0;color:var(--accent-hi);font-size:13px;overflow-wrap:anywhere}
+.top-right{display:flex;align-items:center;gap:10px;margin-left:auto;min-width:0}
+.stamp{font:12px var(--mono);color:var(--ink-3);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---- status pill: a dot plus a label, never colour alone ---- */
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;border:1px solid var(--line-hi);
+  font-size:12px;white-space:nowrap;color:var(--ink-2);background:rgba(7,13,24,.6)}
+.pill.big{padding:5px 12px;font-size:13px;color:var(--ink)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);flex:none}
+.pill.ok .dot{background:var(--good);box-shadow:0 0 8px rgba(12,163,12,.9)}
+.pill.bad{border-color:rgba(232,106,106,.5);color:var(--ink)}
+.pill.bad .dot{background:var(--bad-hi);box-shadow:0 0 8px rgba(232,106,106,.7)}
+.pill.warn .dot{background:var(--warn)}
+.pill.run{border-color:var(--accent);color:var(--ink)}
+.pill.run .dot{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(53,200,244,.7)}50%{box-shadow:0 0 0 6px rgba(53,200,244,0)}}
+@media (prefers-reduced-motion:reduce){.pill.run .dot{animation:none}*{transition:none!important}}
+
+/* ---- overview tiles ---- */
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:linear-gradient(180deg,var(--panel-hi),var(--panel));border:1px solid var(--line);border-radius:var(--r);
+  padding:12px 14px 12px 16px;position:relative;min-width:0}
+.kpi::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;background:var(--accent);border-radius:2px;
+  box-shadow:0 0 10px rgba(53,200,244,.6)}
+.kpi-label{font-size:12px;color:var(--ink-3)}
+.kpi-value{font-size:26px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.unit{font-size:13px;font-weight:400;color:var(--ink-3);margin:0 6px 0 3px}
+.kpi-sub{font-size:12px;color:var(--ink-3);min-height:18px;overflow-wrap:anywhere}
+.meter{height:4px;border-radius:999px;background:var(--track);margin:2px 0 6px;overflow:hidden}
+.meter i{display:block;height:100%;width:0;background:var(--accent);border-radius:999px}
+
+/* ---- panels ---- */
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+.span-4{grid-column:span 4}.span-5{grid-column:span 5}.span-6{grid-column:span 6}.span-7{grid-column:span 7}.span-8{grid-column:span 8}
+.stack{display:flex;flex-direction:column;gap:16px;min-width:0}
+.panel{position:relative;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r);
+  background:linear-gradient(180deg,var(--panel-hi),var(--panel) 110px)}
+.panel::before{content:"";position:absolute;left:16px;right:16px;top:-1px;height:1px;opacity:.6;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+.panel.grow{flex:1 1 auto}
+.ph{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:11px 16px;border-bottom:1px solid var(--line)}
+.tag{font:600 11px var(--mono);color:var(--accent);letter-spacing:.08em;border:1px solid rgba(53,200,244,.35);border-radius:4px;
+  padding:1px 6px;white-space:nowrap}
+h2{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+.meta{margin-left:auto;color:var(--ink-3);font:12px var(--mono)}
+.pb{padding:14px 16px 16px;flex:1;display:flex;flex-direction:column;gap:12px;min-height:0}
+.push{margin-top:auto}
+.foot{display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--line);padding-top:14px}
+h3{margin:6px 0 0;font-size:12px;font-weight:600;color:var(--ink-3);letter-spacing:.1em;display:flex;align-items:center;gap:10px}
+h3::after{content:"";flex:1;height:1px;background:var(--line)}
+.hint,small{color:var(--ink-3);font-size:12px;margin:0;line-height:1.5}
+details.note{font-size:12px;color:var(--ink-3);border:1px dashed var(--line-hi);border-radius:8px;padding:6px 10px}
+details.note summary{cursor:pointer;color:var(--ink-2)}
+details.note[open] summary{margin-bottom:4px}
+
+/* ---- key / value lists ---- */
+.kv{display:grid;grid-template-columns:96px minmax(0,1fr);gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:13px}
+.kv:first-child{border-top:0}
+.k{color:var(--ink-3)}
+.v{overflow-wrap:anywhere}
+.v.err{color:var(--bad-text)}
+.v.mono{font-family:var(--mono);font-size:12px}
+.empty{color:var(--ink-3);font-size:13px}
+
+/* ---- scroll boxes: long content scrolls inside its box ---- */
+.scroll{overflow:auto;max-height:300px;border:1px solid var(--line);border-radius:8px;background:var(--field);
+  scrollbar-width:thin;scrollbar-color:var(--edge) transparent}
+.scroll::-webkit-scrollbar{width:8px;height:8px}
+.scroll::-webkit-scrollbar-thumb{background:var(--edge);border-radius:8px}
+.scroll.short{max-height:160px}
+.pad{padding:10px 12px}
+.box-head,th{position:sticky;top:0;z-index:1;background:var(--thead);color:var(--ink-3);font-size:12px;font-weight:600;
+  text-align:left;padding:8px 10px;white-space:nowrap;box-shadow:0 1px 0 var(--line)}
+.code{margin:0;font:12px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 12px;color:var(--ink-3)}
+#lastRun{flex:1 1 220px;min-height:0;max-height:none}
+.j-key{color:var(--accent-hi)}.j-str{color:#c9d6ea}.j-num{color:#b9a8ff}.j-lit{color:#f0a8d0}
+
+/* ---- tables ---- */
+table{width:100%;border-collapse:collapse;font-size:13px}
+td{padding:8px 10px;border-top:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+tbody tr:first-child td{border-top:0}
+tbody tr:hover td{background:rgba(53,200,244,.05)}
+td.nowrap,td.actions,td.when{white-space:nowrap;overflow-wrap:normal}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+td.url{color:var(--ink-2)}
+td.empty{padding:14px 10px}
+.btn-row{display:flex;gap:6px}
+
+/* ---- controls ---- */
+.btn{font:inherit;font-size:13px;color:var(--ink);background:#14213a;border:1px solid var(--line-hi);border-radius:7px;
+  padding:7px 14px;cursor:pointer;white-space:nowrap;transition:border-color .15s,background .15s}
+.btn:hover{border-color:var(--accent);background:#182a48}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600;
+  box-shadow:0 0 18px rgba(53,200,244,.28)}
+.btn.primary:hover{background:var(--accent-hi);border-color:var(--accent-hi)}
+.btn.danger{color:var(--bad-text);border-color:rgba(232,106,106,.45);background:transparent}
+.btn.danger:hover{border-color:var(--bad-hi);background:rgba(208,59,59,.16)}
+.btn.sm{padding:4px 10px;font-size:12px}
+.btn[aria-disabled=true]{opacity:.55;cursor:progress}
+.actions-row{display:flex;flex-wrap:wrap;gap:8px}
+input[type=text],input[type=number],select{width:100%;font:13px var(--mono);color:var(--ink);background:var(--field);
+  border:1px solid var(--edge);border-radius:7px;padding:8px 10px;min-width:0}
+select{font-family:var(--sans)}
+input[type=text]:focus,input[type=number]:focus,select:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(53,200,244,.18)}
+::placeholder{color:#73819c}
+.add-row{display:flex;gap:8px}
+.add-row input{flex:1}
+.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
+.f{display:flex;flex-direction:column;gap:4px;min-width:0}
+.f.wide{grid-column:1/-1}
+.f label,.lab{font-size:12px;color:var(--ink-2)}
+.lab-row{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.readout{border:1px solid var(--line);border-radius:7px;background:var(--field);padding:8px 10px;font-size:12px;
+  overflow-wrap:anywhere;color:var(--ink-2)}
+.opts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px}
+.opt{display:flex;gap:12px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:8px;
+  background:rgba(255,255,255,.015);cursor:pointer;min-width:0}
+.opt:hover{border-color:var(--line-hi)}
+.opt input{appearance:none;-webkit-appearance:none;flex:none;width:36px;height:20px;margin:2px 0 0;border-radius:999px;
+  background:#22304a;border:1px solid var(--edge);position:relative;cursor:pointer;transition:background .15s,border-color .15s}
+.opt input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--ink-3);
+  transition:transform .15s,background .15s}
+.opt input:checked{background:var(--track);border-color:var(--accent)}
+.opt input:checked::after{transform:translateX(16px);background:var(--accent);box-shadow:0 0 8px rgba(53,200,244,.8)}
+.opt-body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.opt-title{font-size:13px}
+.opt-desc{font-size:12px;color:var(--ink-3);line-height:1.5}
+
+/* ---- action results: an icon plus the text ---- */
+.msg{padding:8px 10px;border-radius:8px;border:1px solid var(--line-hi);background:rgba(7,13,24,.7);font-size:13px;
+  overflow-wrap:anywhere;white-space:pre-wrap}
+.msg:empty{display:none}
+.msg::before{font-weight:700;margin-right:6px}
+.msg.ok{border-color:rgba(12,163,12,.55);background:rgba(12,163,12,.10)}
+.msg.ok::before{content:"✓";color:#4bd44b}
+.msg.bad{border-color:rgba(232,106,106,.55);background:rgba(208,59,59,.12)}
+.msg.bad::before{content:"✕";color:var(--bad-text)}
+.msg.info::before{content:"●";color:var(--accent);font-size:10px;vertical-align:1px}
+
+/* ---- report / failures / keyword chips ---- */
+.run-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;font-size:13px;padding-bottom:6px}
+.run-head .at{margin-left:auto;font:12px var(--mono);color:var(--ink-3)}
+.fail{border:1px solid rgba(232,106,106,.35);border-radius:8px;padding:2px 10px;background:rgba(208,59,59,.06);margin-top:8px}
+.cols{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;overflow-wrap:anywhere;font-size:13px;color:var(--ink-2)}
+.chips.err{color:var(--bad-text)}
+.chip{font:12px var(--mono);color:var(--ink-2);border:1px solid var(--line-hi);border-radius:5px;padding:1px 7px;
+  background:rgba(53,200,244,.06)}
+.split{display:flex;justify-content:space-between;align-items:center;gap:10px}
+
+/* ---- responsive ---- */
+@media (max-width:1180px){
+  .kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media (max-width:1000px){
+  .span-4,.span-5,.span-6,.span-7,.span-8{grid-column:1/-1}
+}
+@media (max-width:700px){
+  .wrap{padding:12px 12px 36px}
+  .top-right{margin-left:0;width:100%}
+  .stamp{flex:1;max-width:none}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .kpi-value{font-size:22px}
+  .fields,.opts,.cols{grid-template-columns:minmax(0,1fr)}
+  .add-row{flex-direction:column}
+  .split{flex-wrap:wrap}
+  td.when{white-space:normal}
+  th{white-space:normal}
+  /* subscriptions: one card per source instead of a 4-column table */
+  #subsTable thead{display:none}
+  #subsTable,#subsTable tbody{display:block}
+  #subsTable tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;padding:10px;border-top:1px solid var(--line)}
+  #subsTable tr:first-child{border-top:0}
+  #subsTable td{padding:0;border:0}
+  #subsTable td:nth-child(1){grid-area:1/1}
+  #subsTable td:nth-child(3){grid-area:1/2}
+  #subsTable td:nth-child(2){grid-area:2/1/3/3}
+  #subsTable td:nth-child(4){grid-area:3/1/4/3}
+  #subsTable td.empty{grid-area:auto/1/auto/3}
+}
 </style>
 </head>
 <body>
-<h1>Clash 合并订阅 · 管理</h1>
-<p>最终地址：<code>https://xiuyuan.9527653.xyz/jay_filtered.yaml</code>（由 nginx 静态提供，不经过本服务）</p>
+<div class="wrap">
 
-<div class="card" id="status"><h2>运行状态</h2><div class="mono" id="statusText">加载中…</div>
-<button id="btnRun">立即执行一次</button>
-<button id="btnReapply">重新应用规则</button>
-<div id="reapplyMsg" class="hint" style="margin-top:6px">重新应用规则：用最新的 ini 重新算分组和规则，不重新测纯净度（几秒完成）。只对当前订阅文件里的节点生效；被预过滤或连续失败隐藏的节点，要等下一轮完整执行才会回来；节点名也不改，下一轮完整执行时统一。</div>
-<button id="btnRefresh">刷新状态</button></div>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <div><h1>Clash 合并订阅 · 管理</h1><div class="brand-sub">MERGE CONTROL CONSOLE</div></div>
+  </div>
+  <div class="addr">
+    <div class="addr-label"><span>最终地址</span><small>由 nginx 静态提供，不经过本服务</small></div>
+    <code id="finalUrl">https://xiuyuan.9527653.xyz/jay_filtered.yaml</code>
+    <button type="button" class="btn sm" id="btnCopy">复制</button>
+  </div>
+  <div class="top-right">
+    <span class="pill big" id="statePill" role="status"><i class="dot" aria-hidden="true"></i><span id="stateLabel">加载中…</span></span>
+    <span class="stamp" id="refreshedAt"></span>
+    <button type="button" class="btn sm" id="btnRefresh">刷新状态</button>
+  </div>
+</header>
 
-<div class="card"><h2>订阅源</h2>
-<table><thead><tr><th>ID</th><th>地址（完整显示，含 token）</th><th>启用</th><th>操作</th></tr></thead>
-<tbody id="subs"></tbody></table>
-<h3>新增订阅（只需填一个订阅 URL）</h3>
-<input type="text" id="newUrl" placeholder="https://…">
-<button id="btnAddSub">新增并立即执行</button>
-<div id="subMsg"></div></div>
+<section class="kpis" aria-label="概览">
+  <div class="kpi"><div class="kpi-label">下次执行</div><div class="kpi-value" id="kNext">—</div><div class="kpi-sub" id="kNextSub"></div></div>
+  <div class="kpi"><div class="kpi-label">上轮发布节点</div><div class="kpi-value" id="kOut">—</div><div class="kpi-sub" id="kOutSub"></div></div>
+  <div class="kpi"><div class="kpi-label">纯净度已测</div><div class="kpi-value" id="kPure">—</div>
+    <div class="meter" id="kPureMeter" role="img" hidden><i id="kPureBar"></i></div><div class="kpi-sub" id="kPureSub"></div></div>
+  <div class="kpi"><div class="kpi-label">当前不输出</div><div class="kpi-value" id="kOmit">—</div><div class="kpi-sub" id="kOmitSub"></div></div>
+  <div class="kpi"><div class="kpi-label">订阅源（成功 / 总数）</div><div class="kpi-value" id="kSrc">—</div><div class="kpi-sub" id="kSrcSub"></div></div>
+  <div class="kpi"><div class="kpi-label">上轮用时</div><div class="kpi-value" id="kDur">—</div><div class="kpi-sub" id="kDurSub"></div></div>
+</section>
 
-<div class="card"><h2>设置</h2>
-<div class="row"><div><label>执行间隔（秒，300–86400）</label><input type="number" id="interval" min="300" max="86400"></div>
-<div><label>企业微信通知</label><select id="notify"><option value="true">开（成功和失败都发）</option><option value="false">关（不发任何通知）</option></select></div></div>
-<label>企业微信 webhook（留空 = 保持现有值；页面和接口从不回显真实地址）</label>
-<input type="text" id="webhook" placeholder="留空保持不变">
-<label>自定义规则 ini 地址</label><input type="text" id="ini">
-<label>转换服务地址</label><input type="text" id="subconv">
-<label>输出文件路径（VPS 上）</label><input type="text" id="output">
-<label><input type="checkbox" id="purity"> 启用纯净度检测（mihomo 逐节点自查；关则全部标记未测，仍保留全部节点）</label>
-<label><input type="checkbox" id="delayScreen"> 检测前先做延迟筛选（延迟测试不通过的节点只做 1 次 15 秒的检测，不再重试 3 次；关则每个节点都按 3 次 × 30 秒检测）</label>
-<div class="row"><div><label>纯净度检测并行数（1–8；每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4）</label><input type="number" id="workers" min="1" max="8"></div>
-<div><label>静态节点检测前置（节点本身只能在配置文件里改，页面只显示）</label><div class="mono" id="checkFront">—</div>
-<label><input type="checkbox" id="frontEnabled"> 静态节点检测走前置（默认关：静态节点从 VPS 直连检测）</label></div></div>
-<label><input type="checkbox" id="remote"> 使用远程 subconverter（需另填下方公开合并地址，否则保持本地套用 ini）</label>
-<label>公开的合并中间文件地址（仅远程模式用）</label><input type="text" id="mergedUrl" placeholder="https://…/merged.yaml">
-<button id="btnSave">保存设置并立即执行</button>
-<button id="btnReload">放弃修改，重新载入</button>
-<div id="setMsg"></div></div>
+<main class="grid">
 
-<div class="card"><h2>上次执行结果</h2><div class="mono" id="lastRun">—</div></div>
+<section class="panel span-4" id="status">
+  <div class="ph"><span class="tag">01 STATUS</span><h2>运行状态</h2></div>
+  <div class="pb">
+    <div id="statusText"><div class="empty">加载中…</div></div>
+    <div class="actions-row">
+      <button type="button" class="btn primary" id="btnRun">立即执行一次</button>
+      <button type="button" class="btn" id="btnReapply">重新应用规则</button>
+    </div>
+    <div id="reapplyMsg" class="msg" aria-live="polite"></div>
+    <details class="note push"><summary>“重新应用规则”做什么？</summary>用最新的 ini 重新算分组和规则，不重新测纯净度（几秒完成）。只对当前订阅文件里的节点生效；被预过滤或连续失败隐藏的节点，要等下一轮完整执行才会回来；节点名也不改，下一轮完整执行时统一。</details>
+  </div>
+</section>
 
-<div class="card"><h2>末轮失败的订阅源</h2>
-<p class="hint">最近一轮执行中拉取失败的订阅地址（已跳过，用其余源继续跑）。地址完整显示，含 token，仅登录后可见；企业微信通知里只显示成功/总数，不含地址。</p>
-<div class="mono" id="failedSubs">—</div></div>
+<section class="panel span-8">
+  <div class="ph"><span class="tag">02 SOURCES</span><h2>订阅源</h2><span class="meta" id="subCount"></span></div>
+  <div class="pb">
+    <div class="scroll" role="region" aria-label="订阅源列表" tabindex="0">
+      <table id="subsTable"><thead><tr><th>ID</th><th>地址（完整显示，含 token）</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="subs"></tbody></table>
+    </div>
+    <div class="f">
+      <label for="newUrl">新增订阅（只需填一个订阅 URL）</label>
+      <div class="add-row"><input type="text" id="newUrl" placeholder="https://…" autocomplete="off" spellcheck="false">
+      <button type="button" class="btn" id="btnAddSub">新增并立即执行</button></div>
+    </div>
+    <div id="subMsg" class="msg" aria-live="polite"></div>
+  </div>
+</section>
 
-<div class="card"><h2>过滤规则（只读，来自 ini）</h2>
-<p class="hint">exclude_remarks：名字里出现这些词的节点，在测试之前就被排除，不参与检测。（ini 内容服务端缓存 5 分钟）</p>
-<div class="mono" id="excludeText">加载中…</div>
-<button id="btnIni">重新读取 ini</button>
-<table><thead><tr><th>上轮被过滤的节点</th></tr></thead>
-<tbody id="excludedNames"></tbody></table></div>
+<section class="panel span-7">
+  <div class="ph"><span class="tag">03 CONFIG</span><h2>设置</h2></div>
+  <div class="pb">
+    <div class="fields">
+      <div class="f"><label for="interval">执行间隔（秒，300–86400）</label><input type="number" id="interval" min="300" max="86400"></div>
+      <div class="f"><label for="notify">企业微信通知</label><select id="notify"><option value="true">开（成功和失败都发）</option><option value="false">关（不发任何通知）</option></select></div>
+      <div class="f wide"><div class="lab-row"><label for="webhook">企业微信 webhook</label><small id="webhookState"></small></div>
+        <input type="text" id="webhook" placeholder="留空保持不变" autocomplete="off" spellcheck="false">
+        <small>留空 = 保持现有值；页面和接口从不回显真实地址</small></div>
+      <div class="f wide"><label for="ini">自定义规则 ini 地址</label><input type="text" id="ini" spellcheck="false"></div>
+      <div class="f"><label for="subconv">转换服务地址</label><input type="text" id="subconv" spellcheck="false"></div>
+      <div class="f"><label for="output">输出文件路径（VPS 上）</label><input type="text" id="output" spellcheck="false"></div>
+    </div>
 
-<div class="card"><h2>节点可用性记录</h2>
-<p class="hint">连续 3 次检测不可用（测不到）的节点不会出现在订阅里，但每轮仍会测试，下次测到可用时自动恢复。若某一轮超过 60% 的节点都测不到，按检测环境故障处理，这一轮不计失败。清空记录后，所有节点重新开始计数。</p>
-<div class="mono" id="availText">加载中…</div>
-<table><thead><tr><th>节点</th><th>连续失败</th><th>最后检测</th></tr></thead>
-<tbody id="omitted"></tbody></table>
-<button id="btnClearAvail">清空记录</button>
-<div id="availMsg"></div></div>
+    <h3>纯净度检测</h3>
+    <div class="opts">
+      <label class="opt"><input type="checkbox" role="switch" id="purity"><span class="opt-body"><span class="opt-title">启用纯净度检测</span>
+        <span class="opt-desc">mihomo 逐节点自查；关则全部标记未测，仍保留全部节点</span></span></label>
+      <label class="opt"><input type="checkbox" role="switch" id="delayScreen"><span class="opt-body"><span class="opt-title">检测前先做延迟筛选</span>
+        <span class="opt-desc">延迟测试不通过的节点只做 1 次 15 秒的检测，不再重试 3 次；关则每个节点都按 3 次 × 30 秒检测</span></span></label>
+    </div>
+    <div class="fields">
+      <div class="f"><label for="workers">纯净度检测并行数（1–8）</label><input type="number" id="workers" min="1" max="8">
+        <small>每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4</small></div>
+      <div class="f"><span class="lab">静态节点检测前置</span><div class="readout" id="checkFront">—</div>
+        <small>节点本身只能在配置文件里改，页面只显示</small></div>
+    </div>
+    <label class="opt"><input type="checkbox" role="switch" id="frontEnabled"><span class="opt-body"><span class="opt-title">静态节点检测走前置</span>
+      <span class="opt-desc">默认关：静态节点从 VPS 直连检测</span></span></label>
+
+    <h3>远程转换</h3>
+    <div class="fields">
+      <label class="opt"><input type="checkbox" role="switch" id="remote"><span class="opt-body"><span class="opt-title">使用远程 subconverter</span>
+        <span class="opt-desc">需另填公开合并地址，否则保持本地套用 ini</span></span></label>
+      <div class="f"><label for="mergedUrl">公开的合并中间文件地址（仅远程模式用）</label>
+        <input type="text" id="mergedUrl" placeholder="https://…/merged.yaml" spellcheck="false"></div>
+    </div>
+
+    <div class="foot push">
+      <div class="actions-row">
+        <button type="button" class="btn primary" id="btnSave">保存设置并立即执行</button>
+        <button type="button" class="btn" id="btnReload">放弃修改，重新载入</button>
+      </div>
+      <div id="setMsg" class="msg" aria-live="polite"></div>
+    </div>
+  </div>
+</section>
+
+<div class="stack span-5">
+  <section class="panel grow">
+    <div class="ph"><span class="tag">04 REPORT</span><h2>上次执行结果</h2></div>
+    <div class="pb">
+      <div id="runSummary"><div class="empty">加载中…</div></div>
+      <h3>原始报告 JSON</h3>
+      <pre class="code scroll" id="lastRun" role="region" aria-label="原始报告 JSON" tabindex="0">—</pre>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="ph"><span class="tag">05 FAILED</span><h2>末轮失败的订阅源</h2><span class="meta" id="failedCount"></span></div>
+    <div class="pb">
+      <div class="scroll pad short" id="failedSubs" role="region" aria-label="末轮失败的订阅源" tabindex="0">—</div>
+      <details class="note"><summary>说明</summary>最近一轮执行中拉取失败的订阅地址（已跳过，用其余源继续跑）。地址完整显示，含 token，仅登录后可见；企业微信通知里只显示成功/总数，不含地址。</details>
+    </div>
+  </section>
+</div>
+
+<section class="panel span-6">
+  <div class="ph"><span class="tag">06 FILTER</span><h2>过滤规则（只读，来自 ini）</h2><span class="meta" id="iniStamp"></span></div>
+  <div class="pb">
+    <div class="split"><p class="hint">exclude_remarks：名字里出现这些词的节点，在测试之前就被排除，不参与检测。（ini 内容服务端缓存 5 分钟）</p>
+      <button type="button" class="btn sm" id="btnIni">重新读取 ini</button></div>
+    <div class="cols">
+      <div class="scroll" role="region" aria-label="排除关键词" tabindex="0">
+        <div class="box-head" id="exHead">排除关键词</div>
+        <div class="chips pad" id="excludeText">加载中…</div>
+      </div>
+      <div class="scroll" role="region" aria-label="上轮被过滤的节点" tabindex="0">
+        <table><thead><tr><th id="excludedHead">上轮被过滤的节点</th></tr></thead>
+        <tbody id="excludedNames"></tbody></table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel span-6">
+  <div class="ph"><span class="tag">07 HEALTH</span><h2>节点可用性记录</h2></div>
+  <div class="pb">
+    <div class="split"><div id="availText" class="hint">加载中…</div>
+      <button type="button" class="btn sm danger" id="btnClearAvail">清空记录</button></div>
+    <div class="scroll" role="region" aria-label="当前不输出的节点" tabindex="0">
+      <table><thead><tr><th>当前不输出的节点</th><th>连续失败</th><th>最后检测</th></tr></thead>
+      <tbody id="omitted"></tbody></table>
+    </div>
+    <div id="availMsg" class="msg" aria-live="polite"></div>
+    <details class="note push"><summary>说明</summary>连续 3 次检测不可用（测不到）的节点不会出现在订阅里，但每轮仍会测试，下次测到可用时自动恢复。若某一轮超过 60% 的节点都测不到，按检测环境故障处理，这一轮不计失败。清空记录后，所有节点重新开始计数。</details>
+  </div>
+</section>
+
+</main>
+</div>
 
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
 
+// A failed call throws Error(status + ' ' + reason). The server answers
+// with {"errors": [...]} or {"detail": ...}: show the reason itself
+// instead of the raw JSON body.
+function errText(t){
+  try{ const j = JSON.parse(t);
+    if(Array.isArray(j.errors)) return j.errors.join('；');
+    if(typeof j.detail === 'string') return j.detail;
+    if(Array.isArray(j.detail)) return j.detail.map(d => (d && d.msg) ? d.msg : JSON.stringify(d)).join('；');
+  }catch(e){ /* not JSON: show the body as it is */ }
+  return t;
+}
 async function api(path, opts){
   opts = Object.assign({credentials:'include'}, opts||{});
   // Required by the server's CSRF guard on mutating /api calls.
   opts.headers = Object.assign({'X-Requested-With':'XMLHttpRequest'}, opts.headers||{});
   const r = await fetch(path, opts);
-  if(!r.ok){ const t = await r.text(); throw new Error(r.status+' '+t); }
+  if(!r.ok){ const t = await r.text(); throw new Error(r.status+' '+errText(t)); }
   return r.json();
 }
 function jsonOpts(method, body){
   return {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
 }
 
-// Table rows built with textContent only: node names, subscription
-// URLs and ini-derived names are untrusted and never parsed as HTML.
-function cell(text){ const td = document.createElement('td'); td.textContent = text==null ? '' : String(text); return td; }
-function button(text, onClick){ const b = document.createElement('button'); b.textContent = text; b.addEventListener('click', onClick); return b; }
+// Everything that comes from the API is written with textContent or
+// createElement only: node names, subscription URLs, ini-derived names
+// and error texts are untrusted and are never parsed as HTML.
+function el(tag, cls, text){ const n = document.createElement(tag); if(cls) n.className = cls; if(text != null) n.textContent = String(text); return n; }
+function cell(text, cls){ return el('td', cls, text==null ? '' : text); }
 function fillRows(tbody, rows){ tbody.replaceChildren(...rows); }
 function row(...cells){ const tr = document.createElement('tr'); tr.append(...cells); return tr; }
+function emptyRow(text, span){ const td = cell(text, 'empty'); td.colSpan = span; return row(td); }
+function kv(label, value, cls){ const d = el('div', 'kv'); d.append(el('span', 'k', label), el('span', 'v'+(cls?' '+cls:''), value)); return d; }
+function pill(kind, text){ const p = el('span', 'pill '+kind), dot = el('i', 'dot'); dot.setAttribute('aria-hidden', 'true'); p.append(dot, el('span', null, text)); return p; }
+function say(target, text, kind){ target.textContent = text; target.className = 'msg'+(kind?' '+kind:''); }
+function num(v){ return (v === undefined || v === null) ? '—' : String(v); }
+function clock(){ return new Date().toLocaleTimeString('zh-CN', {hour12:false}); }
+function setState(kind, label){
+  $('statePill').className = 'pill big '+kind;
+  if($('stateLabel').textContent !== label) $('stateLabel').textContent = label;
+}
+
+// A button ignores clicks while its own request is in flight.
+// aria-disabled (not disabled) keeps the keyboard focus on it.
+function guard(b, fn){
+  b.addEventListener('click', async () => {
+    if(b.getAttribute('aria-disabled') === 'true') return;
+    b.setAttribute('aria-disabled', 'true');
+    try{ await fn(); } finally{ b.removeAttribute('aria-disabled'); }
+  });
+  return b;
+}
+function button(text, onClick, cls, label){
+  const b = el('button', cls||'btn sm', text); b.type = 'button';
+  if(label) b.setAttribute('aria-label', label);
+  return guard(b, onClick);
+}
+
+// Re-render a block only when its data changed: an unchanged 30 s poll
+// must not reset the scroll position or the text selection inside a
+// scroll box.
+const shown = {};
+function changed(key, data){
+  const s = JSON.stringify(data === undefined ? null : data);
+  if(shown[key] === s) return false;
+  shown[key] = s; return true;
+}
 
 let formLoaded = false;
 let lastRunKey = null;
+let fastTimer = null;
 
 function fillForm(c){
+  $('webhook').value = '';
   $('interval').value = c.interval_seconds;
   $('notify').value = String(c.notify_enabled);
   $('ini').value = c.ini_url||'';
@@ -117,58 +481,221 @@ function fillForm(c){
   formLoaded = true;
 }
 
+// next_run is server time in UTC+8, "YYYY-MM-DD HH:MM:SS".
+function untilText(nextRun, running){
+  if(running) return '本轮执行中';
+  const t = Date.parse(String(nextRun||'').replace(' ', 'T')+'+08:00');
+  if(isNaN(t)) return '';
+  const min = Math.round((t - Date.now())/60000);
+  if(min <= 0) return '即将开始';
+  if(min < 60) return '约 '+min+' 分钟后';
+  if(min < 1440) return '约 '+Math.round(min/6)/10+' 小时后';
+  return '约 '+Math.round(min/144)/10+' 天后';
+}
+function setDuration(node, sec){
+  if(sec === undefined || sec === null){ node.textContent = '—'; return; }
+  node.textContent = '';
+  if(sec < 60){ node.append(String(sec), el('span', 'unit', '秒')); return; }
+  const total = Math.round(sec);
+  node.append(String(Math.floor(total/60)), el('span', 'unit', '分'), String(total%60), el('span', 'unit', '秒'));
+}
+
+function renderStatus(s, lr){
+  const failed = !!s.last_error || (!!lr.started_at && lr.ok === false);
+  setState(s.running ? 'run' : failed ? 'bad' : 'ok', s.running ? '运行中' : failed ? '上次失败' : '空闲');
+  const rows = [
+    kv('当前状态', s.running ? '正在执行一轮' : '空闲，等待下次执行'),
+    kv('下次执行', s.next_run||'—'),
+    kv('累计启动', s.runs_started+' 轮'),
+    kv('重叠跳过', s.runs_skipped_overlap+' 次')];
+  if(s.last_error) rows.push(kv('最近错误', s.last_error, 'err'));
+  $('statusText').replaceChildren(...rows);
+
+  const nr = String(s.next_run||'').split(' ');
+  $('kNext').textContent = nr[1]||'—';
+  $('kNextSub').textContent = [nr[0], untilText(s.next_run, s.running)].filter(Boolean).join(' · ');
+
+  const reapplied = lr.kind === 'reapply';
+  $('kOut').textContent = num(lr.proxies_out);
+  $('kOutSub').textContent =
+    (lr.started_at && lr.ok === false) ? '上轮失败，沿用上一次的文件' :
+    lr.total_in !== undefined ? ('合并 '+lr.total_in+' · 去重 '+num(lr.dedup_removed)+' · 过滤 '+num(lr.prefilter_excluded)) :
+    reapplied ? '来自重新应用规则' : '';
+
+  const m = lr.purity_measured, u = lr.purity_unmeasured;
+  const total = (m||0)+(u||0);
+  $('kPure').textContent = num(m);
+  $('kPureSub').textContent = m === undefined ? (reapplied ? '重新应用规则不测纯净度' : '') :
+    ('未测 '+num(u)+' · 出口 IP 不符 '+num(lr.purity_mismatched_exit_ip));
+  $('kPureMeter').hidden = !(m !== undefined && total > 0);
+  if(m !== undefined && total > 0){
+    $('kPureBar').style.width = (100*m/total).toFixed(1)+'%';
+    $('kPureMeter').setAttribute('aria-label', '已测 '+m+' 个，共 '+total+' 个');
+  }
+
+  const f = lr.sources_failed;
+  $('kSrc').textContent = lr.sources_total === undefined ? '—' : (num(lr.sources_ok)+' / '+lr.sources_total);
+  $('kSrcSub').textContent = f === undefined ? (reapplied ? '重新应用规则不拉取订阅' : '') :
+    f.length ? ('失败 '+f.length+' 个'+(lr.ok ? '，已跳过' : '')) : '全部成功';
+
+  setDuration($('kDur'), lr.duration_seconds);
+  $('kDurSub').textContent = lr.finished_at ? ('结束于 '+lr.finished_at) : '';
+}
+
+function renderRun(lr){
+  const box = $('runSummary');
+  if(!lr.started_at){ box.replaceChildren(el('div', 'empty', '还没有执行记录。')); return; }
+  const head = el('div', 'run-head');
+  head.append(pill(lr.ok ? 'ok' : 'bad', lr.ok ? '成功' : '失败'),
+    el('span', null, lr.kind === 'reapply' ? '重新应用规则' : '完整执行'),
+    el('span', 'at', lr.finished_at||lr.started_at));
+  const has = k => lr[k] !== undefined && lr[k] !== null;
+  const rows = [];
+  if(!lr.ok) rows.push(kv('失败步骤', lr.failed_step||'—', 'err'), kv('原因', lr.error||'—', 'err'));
+  rows.push(kv('开始', lr.started_at));
+  if(has('duration_seconds')) rows.push(kv('用时', lr.duration_seconds+' 秒'));
+  if(has('groups')) rows.push(kv('分组 / 规则', lr.groups+' 个分组 · '+num(lr.rules)+' 条规则 · '+num(lr.rule_providers)+' 个规则集'));
+  if(has('low_purity_group')) rows.push(kv('优选分组', lr.low_purity_group+' · '+num(lr.low_purity_members)+' 个节点'));
+  if(has('purity_delay_screen_failed')) rows.push(kv('延迟筛选', '未通过 '+lr.purity_delay_screen_failed+' 个，其中仍测到 '+num(lr.purity_delay_screen_rescued)+' 个'));
+  if(has('availability_omitted')) rows.push(kv('连续失败隐藏', lr.availability_omitted+' 个'+(lr.availability_anomaly_skipped ? '（本轮按检测环境故障处理，不计失败）' : '')));
+  if(has('backend_total')) rows.push(kv('后置节点', lr.backend_total+' 个 · TCP 已注入 '+num(lr.backend_tcp_injected)+' · UDP 未注入 '+num(lr.backend_udp_no_dialer)));
+  if(has('guard_previous_proxies')) rows.push(kv('上一版节点数', lr.guard_previous_proxies));
+  box.replaceChildren(head, ...rows);
+}
+
+// Colour the report JSON token by token. Every token goes in as a text
+// node or a span with textContent, so nothing in the report is ever
+// parsed as HTML.
+const JSON_TOKEN = /"(?:\\.|[^"\\])*"|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+function renderJson(target, value){
+  if(value === undefined || value === null){ target.textContent = '—'; return; }
+  const text = JSON.stringify(value, null, 2), frag = document.createDocumentFragment();
+  let last = 0;
+  for(const m of text.matchAll(JSON_TOKEN)){
+    const t = m[0], end = m.index + t.length;
+    if(m.index > last) frag.append(text.slice(last, m.index));
+    const cls = t[0] === '"' ? (text[end] === ':' ? 'j-key' : 'j-str') : (/^[-\d]/.test(t) ? 'j-num' : 'j-lit');
+    frag.append(el('span', cls, t));
+    last = end;
+  }
+  frag.append(text.slice(last));
+  target.replaceChildren(frag);
+}
+
+function renderFailed(lr){
+  const box = $('failedSubs'), f = lr.sources_failed;
+  $('failedCount').textContent = (lr.started_at && f) ? (f.length+' 个') : '';
+  if(!lr.started_at){ box.replaceChildren(el('div', 'empty', '—')); return; }
+  if(f === undefined){ box.replaceChildren(el('div', 'empty', lr.kind === 'reapply' ?
+    '本轮未拉取订阅源（重新应用规则不拉取订阅）。' : '本轮没有订阅源拉取明细，请查看执行结果。')); return; }
+  if(!f.length){ box.replaceChildren(el('div', 'empty', '末轮没有失败的订阅源。')); return; }
+  box.replaceChildren(el('div', 'hint', '时间：'+(lr.finished_at||lr.started_at)), ...f.map(x => {
+    const d = el('div', 'fail'); d.append(kv('地址', x.url, 'mono'), kv('原因', x.error, 'err')); return d; }));
+}
+
+function renderConfig(c){
+  $('webhookState').textContent = c.wechat_webhook ? '当前：已设置' : '当前：未设置';
+  const cf = c.check_front||{};
+  $('checkFront').textContent = cf.configured ?
+    ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+(cf.server||'')+':'+(cf.port||'')+'）'+(c.check_front_enabled?'，已启用':'，未启用（直连检测）')) :
+    '未配置：静态节点从 VPS 直连检测';
+  const subs = c.subscriptions||[];
+  $('subCount').textContent = subs.filter(x => x.enabled).length+' / '+subs.length+' 启用';
+  if(!changed('subs', subs)) return;
+  fillRows($('subs'), subs.length ? subs.map(sub => {
+    const st = el('td', 'nowrap'); st.append(pill(sub.enabled ? 'ok' : 'off', sub.enabled ? '启用' : '停用'));
+    const act = el('td', 'actions'), wrap = el('div', 'btn-row');
+    wrap.append(button(sub.enabled ? '停用' : '启用', () => toggleSub(sub.id, !sub.enabled), null, (sub.enabled ? '停用 ' : '启用 ')+sub.id),
+                button('删除', () => delSub(sub.id), 'btn sm danger', '删除 '+sub.id));
+    act.append(wrap);
+    return row(cell(sub.id, 'mono nowrap'), cell(sub.url||'', 'mono url'), st, act);
+  }) : [emptyRow('还没有订阅源。', 4)]);
+}
+
+function renderAvailability(a){
+  const om = a.omitted||[];
+  $('availText').textContent = '已记录节点：'+a.tracked+' 个，其中当前不输出：'+om.length+' 个';
+  $('kOmit').textContent = String(om.length);
+  $('kOmitSub').textContent = '已记录 '+a.tracked+' 个节点';
+  fillRows($('omitted'), om.length ?
+    om.map(o => row(cell(o.name), cell(o.fails, 'num'), cell(o.last_seen||'', 'mono when'))) :
+    [emptyRow('当前没有被隐藏的节点。', 3)]);
+}
+
 async function refresh(forceForm){
   const s = await api('/api/status');
-  $('statusText').textContent =
-    '运行中：'+s.running+'\n下次执行：'+(s.next_run||'—')+'\n累计启动：'+s.runs_started+' 轮，重叠跳过：'+s.runs_skipped_overlap+' 次\n'+(s.last_error?'最近错误：'+s.last_error:'');
-  $('lastRun').textContent = s.last_run ? JSON.stringify(s.last_run,null,2) : '—';
   const lr = s.last_run || {};
-  const f = lr.sources_failed;
-  $('failedSubs').textContent =
-    !lr.started_at ? '—' :
-    (f === undefined ? '本轮未拉取订阅源（重新应用规则不拉取订阅）。' :
-     f.length ? ('时间：'+(lr.finished_at||lr.started_at)+'\n'+f.map(x=>'地址：'+x.url+'\n原因：'+x.error).join('\n\n')) :
-     '末轮没有失败的订阅源。');
+  renderStatus(s, lr);
+  if(changed('run', s.last_run)){ renderRun(lr); renderJson($('lastRun'), s.last_run); renderFailed(lr); }
 
   const c = await api('/api/config');
   // Only overwrite the settings form on first load / explicit reload /
   // after a save — the 30 s auto-refresh must not wipe what the user
   // is typing.
   if(!formLoaded || forceForm) fillForm(c);
-  const cf = c.check_front||{};
-  $('checkFront').textContent = cf.configured ?
-    ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+(cf.server||'')+':'+(cf.port||'')+'）'+(c.check_front_enabled?'，已启用':'，未启用（直连检测）')) :
-    '未配置：静态节点从 VPS 直连检测';
-  fillRows($('subs'), (c.subscriptions||[]).map(sub => row(
-    cell(sub.id), cell(sub.url||''), cell(sub.enabled?'是':'否'),
-    (()=>{ const td = document.createElement('td');
-      td.append(button(sub.enabled?'停用':'启用', ()=>toggleSub(sub.id, !sub.enabled)), ' ',
-                button('删除', ()=>delSub(sub.id)));
-      return td; })())));
+  renderConfig(c);
 
   const a = await api('/api/availability');
-  $('availText').textContent =
-    '已记录节点：'+a.tracked+' 个，其中当前不输出：'+(a.omitted||[]).length+' 个';
-  fillRows($('omitted'), (a.omitted||[]).map(o => row(cell(o.name), cell(o.fails), cell(o.last_seen||''))));
+  if(changed('avail', a)) renderAvailability(a);
 
   // The exclude list only changes when a round finishes or the ini
   // changes: reload it then, not on every 30 s tick.
   const key = (lr.finished_at||'')+'|'+(c.ini_url||'');
   if(key !== lastRunKey){ lastRunKey = key; loadIni(false); }
+
+  // While a round is running, look again soon so the status flips
+  // without waiting for the 30 s tick.
+  clearTimeout(fastTimer);
+  if(s.running) fastTimer = setTimeout(() => tick(), 5000);
+}
+
+// refresh() plus the "updated at" stamp. A failed poll shows up in the
+// top bar instead of an unhandled rejection. Returns whether it worked.
+async function tick(forceForm){
+  try{
+    await refresh(forceForm);
+    $('refreshedAt').textContent = '更新于 '+clock();
+    $('refreshedAt').title = '';
+    return true;
+  }catch(e){
+    setState('warn', '连接失败');
+    $('refreshedAt').textContent = e.message;
+    $('refreshedAt').title = e.message;
+    return false;
+  }
+}
+
+function renderExclude(text){
+  const box = $('excludeText'), head = $('exHead');
+  box.className = 'chips pad';
+  if(!text){ head.textContent = '排除关键词'; box.textContent = '（ini 里没有 exclude_remarks）'; return; }
+  // A plain a|b|c list is shown one chip per word; anything with
+  // groups, classes or escapes is shown as the regex it is.
+  if(/[()\[\]\\]/.test(text)){ head.textContent = 'exclude_remarks（正则原文）'; box.className = 'chips pad mono'; box.textContent = text; return; }
+  const words = text.split('|').filter(Boolean);
+  head.textContent = '排除关键词（'+words.length+' 个）';
+  box.replaceChildren(...words.map(w => el('span', 'chip', w)));
 }
 
 async function loadIni(force){
+  const fail = msg => {
+    $('exHead').textContent = '排除关键词';
+    $('excludeText').className = 'chips pad err';
+    $('excludeText').textContent = '获取 ini 失败：'+msg;
+    $('excludedHead').textContent = '上轮被过滤的节点';
+    fillRows($('excludedNames'), [emptyRow('读取失败，暂时无法获取节点列表。', 1)]);
+    $('iniStamp').textContent = '';
+  };
   try{
     const ini = await api('/api/ini'+(force?'?refresh=1':''));
-    if(ini.ok){
-      $('excludeText').textContent = ini.exclude_remarks||'（ini 里没有 exclude_remarks）';
-      const names = ini.prefilter_excluded_names||[];
-      fillRows($('excludedNames'), names.length ? names.map(n => row(cell(n))) :
-        [row(cell('上轮没有过滤掉节点（'+(ini.prefilter_excluded||0)+' 个）'))]);
-    }else{
-      $('excludeText').textContent = '获取 ini 失败：'+(ini.error||'');
-    }
-  }catch(e){ $('excludeText').textContent = '获取 ini 失败：'+e.message; }
+    if(!ini.ok){ fail(ini.error||''); return; }
+    renderExclude(ini.exclude_remarks);
+    const names = ini.prefilter_excluded_names||[];
+    $('excludedHead').textContent = '上轮被过滤的节点（'+names.length+' 个）';
+    fillRows($('excludedNames'), names.length ? names.map(n => row(cell(n))) :
+      [emptyRow('上轮没有过滤掉节点（'+(ini.prefilter_excluded||0)+' 个）', 1)]);
+    $('iniStamp').textContent = '读取于 '+clock();
+  }catch(e){ fail(e.message); }
 }
 
 function startedMsg(r, what){
@@ -177,23 +704,23 @@ function startedMsg(r, what){
 
 async function clearAvail(){ if(!confirm('清空全部可用性记录？当前不输出的节点将在下一轮重新开始计数。')) return;
   try{ const r = await api('/api/availability/clear',{method:'POST'});
-    $('availMsg').textContent='已清空 '+r.cleared+' 条记录。'; refresh();
-  }catch(e){ $('availMsg').textContent='失败：'+e.message; } }
+    say($('availMsg'), '已清空 '+r.cleared+' 条记录。', 'ok'); tick();
+  }catch(e){ say($('availMsg'), '失败：'+e.message, 'bad'); } }
 async function addSub(){
   const url = $('newUrl').value.trim();
   if(!url) return;
   try{ const r = await api('/api/subscriptions', jsonOpts('POST', {url}));
-    $('subMsg').textContent = startedMsg(r, '已新增'); $('newUrl').value=''; refresh();
-  }catch(e){ $('subMsg').textContent='失败：'+e.message; }
+    say($('subMsg'), startedMsg(r, '已新增'), 'ok'); $('newUrl').value=''; tick();
+  }catch(e){ say($('subMsg'), '失败：'+e.message, 'bad'); }
 }
 async function delSub(id){ if(!confirm('删除该订阅源？将立即按新列表执行一轮。')) return;
   try{ const r = await api('/api/subscriptions/'+encodeURIComponent(id),{method:'DELETE'});
-    $('subMsg').textContent = startedMsg(r, '已删除'); refresh();
-  }catch(e){ $('subMsg').textContent='失败：'+e.message; } }
+    say($('subMsg'), startedMsg(r, '已删除'), 'ok'); tick();
+  }catch(e){ say($('subMsg'), '失败：'+e.message, 'bad'); } }
 async function toggleSub(id, enabled){
   try{ const r = await api('/api/subscriptions/'+encodeURIComponent(id), jsonOpts('PATCH', {enabled}));
-    $('subMsg').textContent = startedMsg(r, enabled?'已启用':'已停用'); refresh();
-  }catch(e){ $('subMsg').textContent='失败：'+e.message; } }
+    say($('subMsg'), startedMsg(r, enabled?'已启用':'已停用'), 'ok'); tick();
+  }catch(e){ say($('subMsg'), '失败：'+e.message, 'bad'); } }
 async function saveSettings(){
   const body = {interval_seconds: parseInt($('interval').value,10),
     notify_enabled: $('notify').value==='true',
@@ -209,31 +736,53 @@ async function saveSettings(){
   const w = $('webhook').value.trim();
   if(w) body.wechat_webhook = w;
   try{ const r = await api('/api/config', jsonOpts('PUT', body));
-    $('setMsg').textContent = startedMsg(r, '已保存'); $('webhook').value=''; refresh(true);
-  }catch(e){ $('setMsg').textContent='保存失败：'+e.message; }
+    say($('setMsg'), startedMsg(r, '已保存'), 'ok'); $('webhook').value=''; tick(true);
+  }catch(e){ say($('setMsg'), '保存失败：'+e.message, 'bad'); }
 }
-async function runNow(){ try{ const r = await api('/api/run',{method:'POST'}); alert(r.ok?'已启动一轮。':'未启动：'+(r.error||'')); refresh(); }catch(e){ alert('失败：'+e.message); } }
+async function reloadForm(){
+  if(await tick(true)) say($('setMsg'), '已重新载入当前配置，未保存的修改已放弃。', 'info');
+  else say($('setMsg'), '重新载入失败，连接状态见页面顶部。', 'bad');
+}
+async function runNow(){ const m = $('reapplyMsg');
+  try{ const r = await api('/api/run',{method:'POST'});
+    say(m, r.ok ? '已启动一轮。' : '未启动：'+(r.error||''), r.ok ? 'ok' : 'bad'); tick();
+  }catch(e){ say(m, '失败：'+e.message, 'bad'); } }
 async function reapply(){ const m = $('reapplyMsg');
-  m.textContent='正在重新应用规则…';
+  say(m, '正在重新应用规则…', 'info');
   try{ const r = await api('/api/reapply',{method:'POST'});
-    if(!r.ok){ m.textContent='未启动：'+(r.error||''); return; }
+    if(!r.ok){ say(m, '未启动：'+(r.error||''), 'bad'); return; }
     for(let i=0;i<20;i++){ await new Promise(res=>setTimeout(res,1000));
       const s = await api('/api/status');
       if(!s.running){ const lr = s.last_run||{};
-        m.textContent = lr.ok ? ('已应用：'+(lr.proxies_out||'?')+' 个节点，低纯净分组 '+(lr.low_purity_members||0)+' 个，用时 '+(lr.duration_seconds||'?')+' 秒。') : ('失败（'+(lr.failed_step||'')+'）：'+(lr.error||''));
-        refresh(); return; } }
-    m.textContent='还在执行，请稍后刷新页面查看结果。';
-  }catch(e){ m.textContent='失败：'+e.message; } }
+        if(lr.ok) say(m, '已应用：'+num(lr.proxies_out)+' 个节点，低纯净分组 '+(lr.low_purity_members||0)+' 个，用时 '+num(lr.duration_seconds)+' 秒。', 'ok');
+        else say(m, '失败（'+(lr.failed_step||'')+'）：'+(lr.error||''), 'bad');
+        tick(); return; } }
+    say(m, '还在执行，请稍后刷新页面查看结果。', 'info');
+  }catch(e){ say(m, '失败：'+e.message, 'bad'); } }
 
-$('btnRun').addEventListener('click', runNow);
-$('btnReapply').addEventListener('click', reapply);
-$('btnRefresh').addEventListener('click', ()=>refresh());
-$('btnAddSub').addEventListener('click', addSub);
-$('btnSave').addEventListener('click', saveSettings);
-$('btnReload').addEventListener('click', ()=>refresh(true));
-$('btnIni').addEventListener('click', ()=>loadIni(true));
-$('btnClearAvail').addEventListener('click', clearAvail);
-refresh(); setInterval(()=>refresh(), 30000);
+async function copyUrl(){
+  const src = $('finalUrl'), b = $('btnCopy');
+  let ok = false;
+  try{ await navigator.clipboard.writeText(src.textContent); ok = true; }
+  catch(e){
+    // No clipboard access: select the address so Ctrl+C works.
+    const range = document.createRange(); range.selectNodeContents(src);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  }
+  b.textContent = ok ? '已复制' : '已选中，按 Ctrl+C';
+  setTimeout(() => { b.textContent = '复制'; }, 2000);
+}
+
+guard($('btnRun'), runNow);
+guard($('btnReapply'), reapply);
+guard($('btnRefresh'), () => tick());
+guard($('btnAddSub'), addSub);
+guard($('btnSave'), saveSettings);
+guard($('btnReload'), reloadForm);
+guard($('btnIni'), () => loadIni(true));
+guard($('btnClearAvail'), clearAvail);
+guard($('btnCopy'), copyUrl);
+tick(); setInterval(() => tick(), 30000);
 </script>
 </body>
 </html>
