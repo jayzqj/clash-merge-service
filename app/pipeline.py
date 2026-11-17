@@ -9,11 +9,12 @@ Pipeline order (hard requirement):
 2. merge + dedup
 3. pre-filter by the ini's exclude_remarks (nodes the converter
    would drop anyway are never tested)
-4. per-node purity check (no threshold, keep all)
+4. per-node purity check, preserving the last successful score on failure
 5. availability: nodes failing 3 rounds in a row are omitted from
    the output (still tested next round; back the moment they
    measure again)
-6. normalize display names (flag + Chinese country name; static
+6. optional filter: current or last successful scores <= configured threshold;
+   normalize display names (flag + Chinese country name; static
    nodes rebuilt as "🇺🇸 美国 静态31 1.2.3.4"), then sort by purity
    (measured asc, unmeasured last in original order) and prefix
    names with the measured score ("5% ...")
@@ -21,8 +22,8 @@ Pipeline order (hard requirement):
 8. inject dialer-proxy AFTER conversion, fill backend groups
 9. add the low-purity group (measured score <= 15, http excluded)
    to 手动选择 and 国外AI
-10. guard: refuse to publish 0 proxies, or fewer than 30% of the
-    currently published count (last good file kept, step "guard")
+10. guard: refuse unexpected empty/collapsed output, accounting for
+    deliberate purity exclusions (an intentionally empty result is allowed)
 11. atomically replace the output file — ONLY on full success.
     Any failure keeps the last good file and records step + reason.
 
@@ -42,6 +43,7 @@ parallel to cut that down).
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -68,6 +70,7 @@ from app.merge import (dedup_key, merge_proxies, prefix_purity_names,
 from app.names import normalize_name
 from app.notify import failure_text, send_wechat, success_text
 from app.purity import MihomoChecker
+from app.purity_history import apply_history, filter_by_purity
 
 log = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
@@ -163,15 +166,19 @@ def _published_proxy_count(out_path: Path) -> int | None:
 
 
 def _guard_output(cfg: Config, doc: dict, report: dict) -> None:
-    """Refuse to publish an empty or collapsed file. Raises
+    """Refuse unexpected empty/collapsed output, allowing purity exclusions. Raises
     FetchError("guard", ...); the last good file stays in place."""
     new = len(doc.get("proxies") or [])
     prev = _published_proxy_count(Path(cfg.output_path))
     report["guard_previous_proxies"] = prev
-    if new == 0:
+    intentional = (report.get("purity_filter_excluded", 0)
+                   + report.get("availability_omitted", 0)
+                   if report.get("purity_filter_enabled") else 0)
+    empty_by_filter = (intentional > 0 and report.get("purity_filter_kept") == 0)
+    if new == 0 and not empty_by_filter:
         raise FetchError("guard", "new output has 0 proxies, not publishing")
     if (prev is not None and prev >= GUARD_MIN_PREVIOUS
-            and new < prev * GUARD_MIN_RATIO):
+            and new + intentional < prev * GUARD_MIN_RATIO):
         raise FetchError(
             "guard", f"new output has {new} proxies vs {prev} published "
             f"(< {int(GUARD_MIN_RATIO * 100)}%), not publishing — "
@@ -321,6 +328,9 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                 "error": "previous round still running"}
     state.running = True
     state.runs_started += 1
+    # A settings save during a round applies to the NEXT full round.
+    live_cfg = cfg
+    cfg = Config(data=copy.deepcopy(cfg.data), path=cfg.path)
     started = time.time()
     report: dict = {"started_at": _now_cst(), "ok": False}
     step = "fetch"
@@ -395,6 +405,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             report["purity_workers"] = cfg.purity_workers
             checker = MihomoChecker(cfg)
             purity = await asyncio.to_thread(checker.check_all, to_test)
+            purity = apply_history(cfg, to_test, purity)
             measured = sum(1 for r in purity.values() if r.get("measured"))
             report["purity_measured"] = measured
             report["purity_unmeasured"] = len(to_test) - measured
@@ -418,6 +429,10 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             kept, astats = update_availability(cfg, records, to_test, purity)
             report.update(astats)
 
+            step = "purity-filter"
+            kept, filter_stats = filter_by_purity(cfg, kept, purity)
+            report.update(filter_stats)
+
             step = "normalize-names"
             # Uniform display names: flag + Chinese country name,
             # static nodes rebuilt as "🇺🇸 美国 静态31 1.2.3.4".
@@ -438,7 +453,10 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             report.update(nstats)
 
             step = "convert"
-            if cfg.data.get("use_remote_subconverter"):
+            # Remote conversion fetches an external URL rather than ordered.
+            # Filtering must consume this round's actual eligible nodes.
+            if (cfg.data.get("use_remote_subconverter")
+                    and not cfg.data.get("purity_filter_enabled", False)):
                 merged_yaml = yaml.safe_dump(
                     {"proxies": ordered}, allow_unicode=True, sort_keys=False)
                 doc = await converter_mod.remote_convert(
@@ -478,7 +496,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             scores_by_name = {}
             for p in ordered:
                 rec = purity.get(dedup_key(p))
-                if rec and rec.get("measured") and rec.get("score") is not None:
+                if rec and rec.get("score") is not None:
                     scores_by_name[str(p.get("name", ""))] = int(rec["score"])
             report.update(add_low_purity_group(doc, doc["proxies"],
                                                scores_by_name))
@@ -512,7 +530,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
         else:
             state.last_error = ""
         state.next_run = (datetime.now(CST) +
-                          timedelta(seconds=cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+                          timedelta(seconds=live_cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         persist_state(cfg, state)
         # A manual run moved next_run: let the scheduler re-read it.
         _wake_event().set()

@@ -1,6 +1,6 @@
 # clash-merge-service
 
-把多个 Clash 订阅合并成一份订阅：逐节点测纯净度（全部保留，不设阈值），
+把多个 Clash 订阅合并成一份订阅：逐节点测纯净度，失败时沿用上次成功分数，可选按阈值过滤，
 套用自定义规则 ini 生成最终 YAML，托管在 VPS 上，以固定地址
 `https://xiuyuan.9527653.xyz/jay_filtered.yaml` 供 Clash Verge 直接订阅。
 常驻后端服务 + 配置页 `https://xiuyuan.9527653.xyz/admin`。
@@ -28,6 +28,7 @@ app/
   fetcher.py             拉取订阅并校验“确实是可解析的 Clash YAML 且 >0 节点”
   merge.py               合并 + 去重（server+port+密码/UUID/路径）+ 按纯净度排序
   purity.py              mihomo 逐节点纯净度检测（复用旧任务方法）
+  purity_history.py      保存上次成功分数、失败时沿用、按当前或历史分数过滤
   converter.py           本地套用 ini（分组/规则/base 模板/exclude_remarks）
   dialer.py              转换后注入 dialer-proxy、填充后置分组
   notify.py              企业微信通知（成功和失败都发，末尾带发送方行）
@@ -56,7 +57,9 @@ deploy/
 | `ini_url` | 自定义规则 ini（subconverter 远程配置） |
 | `subconverter_base` / `use_remote_subconverter` / `merged_public_url` | 见下“转换方式” |
 | `output_path` | 最终文件路径，VPS 上如 `/var/www/xiuyuan/jay_filtered.yaml` |
-| `purity_enabled` | 纯净度检测开关；关则全部标记未测，仍保留全部节点 |
+| `purity_enabled` | 纯净度检测开关；关则本轮全部记为未测，有历史分数的继续显示旧分数，不新增连续失败次数 |
+| `purity_filter_enabled` | 纯净度过滤开关，默认关；开启后按本轮分数比较，检测失败或跳过时沿用最近一次成功分数，只返回分数 ≤ `purity_threshold` 的节点。没有任何分数的节点不返回，连续失败三轮仍隐藏。必须同时开启纯净度检测。后台打开开关后才显示阈值输入框 |
+| `purity_threshold` | 后台「纯净度 预留%」，默认 15；输入 0–100 的数字（支持小数），15 表示保留 ≤15%，包含 15%。保存后下轮完整检测生效；过滤关闭时保留阈值但不使用 |
 | `purity_workers` | 并行检测 worker 数（1–8，默认 1 = 串行）；每个 worker 独占一个 mihomo 实例（端口 base+i、工作目录 `mihomo/worker-i`），节点轮询分片。4 worker 时 409 节点一轮约 10–20 分钟（串行约 60 分钟）。2GB VPS 建议 ≤4，每个实例多占约 30–50MB。管理页可调 |
 | `purity_delay_screen` / `purity_delay_url` | 延迟筛选（默认开）：每个 worker 逐个检测前，先对自己那批节点做一次并发延迟测试（mihomo 的 group delay，目标 `purity_delay_url`，超时 10 秒，做 2 轮，任一轮通过即算通过）。通过的节点照常检测（3 次 × 30 秒）；两轮都不通过的节点只做 1 次 15 秒的检测，测到照常记分，测不到才记失败。延迟测试不通过不直接判失败——实测 2026-11-14，5 秒超时下 22 个不通过的节点里有 13 个其实能测到。筛选本身出错或通过率低于 20% 时本批忽略筛选。报告里 `purity_delay_screen_failed` / `purity_delay_screen_rescued` 是不通过的节点数和其中仍测到的节点数。管理页可开关 |
 | `check_front` / `check_front_enabled` | **可选**的静态节点检测前置。默认（`check_front_enabled: false`）静态节点从 VPS **直连**检测，不走任何前置——实测 2026-11-14 Bright Data 网关接受 VPS 出口 IP，直连 171 个静态节点测到 170 个。`check_front` 是一个完整的节点定义（订阅里一个 `proxies` 项的形状），只写配置文件，接口只回显名字/类型/服务器，密码永不回显；只有它已配置**且** `check_front_enabled` 为 true 时，静态 TCP 节点检测才走它（开关可在管理页切换）。不再从订阅里自动挑机场前置（实测 2026-11-12 机场前置走静态节点全部被网关掐断）。只影响检测；输出文件里静态节点仍按 ini 的前置分组注入 `dialer-proxy` |
@@ -94,7 +97,14 @@ webhook 只显示是否已设置；`check_front` 只回显名字、类型、服�
 3. 纯净度检测：mihomo 逐个切换节点自查，每节点失败重试 3 次；
    记录出口 IP、国家、fraudScore，校验出口 IP 与节点预期 IP 是否一致，
    验证链接记为 `https://ippure.com/?ip=<IP>`；节点按 IP 识别，不按国家标签。
-   **不设阈值，全部保留**；只用于排序（已测按分数升序，未测排最后、保持原顺序）。
+   默认关闭纯净度过滤，按分数升序排列；本轮未取得分数时沿用上次成功分数，
+   没有任何历史分数的节点排最后、保持原顺序。历史分数不代表本轮检测成功，
+   仍正常累计连续失败次数。开启过滤后按本轮或沿用的历史分数比较，仅返回分数
+   不高于预留值的节点；没有任何分数的节点不返回，连续失败三轮仍隐藏。
+   历史记录存于配置文件同目录的 `purity_history.json`，连接参数的 SHA-256 作为键，
+   不存节点凭据；重命名不丢历史，连接参数改变则不沿用。首次升级从当前发布文件
+   的分数前缀恢复已有分数，之后每次成功测量更新记录，失败保留最近一次成功值。
+   开启过滤时使用本地转换，保证转换读取本轮过滤后的节点，不从远程中间地址带回旧节点。
    并行数见 `purity_workers`（每个 worker 一个 mihomo 实例）。
    静态节点默认从 VPS 直连检测；可选走 `check_front`（见上表）。检测用的
    mihomo 关闭 IPv6（Bright Data 网关只通 IPv4）。每轮开始前先从 VPS 直连请求一次
@@ -119,7 +129,7 @@ webhook 只显示是否已设置；`check_front` 只回显名字、类型、服�
    匹配结果不变。
    排序后，测到的节点会在名字前加上纯净度分数，例如
    `日本02 三网高速`（fraudScore 5）变成 `5% 🇹🇼 日本02 三网高速`；
-   没测到的节点保持（已统一的）原名。同名同分时后面一个会再加
+   没测到但有历史分数的节点沿用旧分数前缀；没有历史分数的保持（已统一的）原名。同名同分时后面一个会再加
    ` (n)` 以保证名字唯一。
 4. 套用 ini（见下）。
 5. 转换**之后**再注入 `dialer-proxy`（转换服务通常会剥掉该字段）：
@@ -134,6 +144,10 @@ webhook 只显示是否已设置；`check_front` 只回显名字、类型、服�
    加进 🚀 手动选择和 🤖 国外AI 两个分组里。
 6. 发布前保护（`guard` 步骤）：新文件 0 个节点，或节点数不到当前已发布文件的
    30%（旧文件 ≥20 个节点时），拒绝发布，保留旧文件并按失败通知。
+   开启纯净度过滤时，主动过滤和连续失败隐藏的节点数计入缩减保护的比较基数；全部节点因过滤或隐藏
+   不合格时允许发布空节点列表（空分组用 REJECT），不会继续返回不符合阈值的旧节点。
+   来源异常造成的非预期数量骤减仍受保护。报告包含 `purity_reused`（输出中沿用旧分数数目）、
+   `purity_filter_enabled`、`purity_threshold`、`purity_filter_kept` 和 `purity_filter_excluded`。
 7. 成功才原子替换输出文件：临时文件写在 `config.json` 同目录（不在 nginx
    静态目录里，候选文件不会被下载到），`mihomo -t` 校验通过后 `os.replace`；
    失败时临时文件被删除。任何一步失败都保留上一次的好文件，并记录失败步骤 + 原因。

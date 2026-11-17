@@ -99,13 +99,12 @@ def merge_proxies(sources: list[tuple[str, list[dict]]]) -> tuple[list[dict], di
 
 
 def sort_by_purity(proxies: list[dict], purity: dict) -> list[dict]:
-    """Order for the final file: measured nodes by fraudScore
-    ascending; unmeasured nodes last, in original order, marked
-    unmeasured. No node is dropped for a high score (no threshold)."""
+    """Order current/cached scores ascending, then nodes with no score.
+    Optional threshold filtering is handled separately by the pipeline."""
     def sort_key(item: tuple[int, dict]):
         idx, p = item
         rec = purity.get(dedup_key(p))
-        if rec and rec.get("measured") and rec.get("score") is not None:
+        if rec and rec.get("score") is not None:
             return (0, rec["score"], idx)
         return (1, 0, idx)
     return [p for _i, p in sorted(enumerate(proxies), key=sort_key)]
@@ -116,22 +115,24 @@ def prefix_purity_names(proxies: list[dict], purity: dict) -> tuple[list[dict], 
     ``"日本02 三网高速"`` with fraudScore 5 becomes
     ``"5% 🇹🇼 日本02 三网高速"`` (the base name is normalized by
     ``names.normalize_name`` before this runs, so the flag and the
-    Chinese country name are already in place). Unmeasured nodes keep
-    their (normalized) name. Must run AFTER the purity round (records
+    Chinese country name are already in place). Cached scores also get
+    a prefix; nodes with no score keep their name. Run AFTER the round (records
     are keyed by the pre-rename identity) and BEFORE conversion, so
     grouping and dialer-proxy injection see the final names. Final
     names are made unique: two same-name nodes with the same score
     get a ``" (n)"`` suffix on the later one.
     """
-    stats = {"purity_prefixed": 0, "unmeasured_kept": 0}
+    stats = {"purity_prefixed": 0, "unmeasured_kept": 0, "purity_reused": 0}
     seen_names: dict[str, int] = {}
     out: list[dict] = []
     for p in proxies:
         node = copy.deepcopy(p)
         rec = purity.get(dedup_key(p))
-        if rec and rec.get("measured") and rec.get("score") is not None:
+        if rec and rec.get("score") is not None:
             node["name"] = f"{int(rec['score'])}% {node.get('name', '')}"
             stats["purity_prefixed"] += 1
+            if rec.get("score_source") == "history":
+                stats["purity_reused"] += 1
         else:
             stats["unmeasured_kept"] += 1
         name = str(node.get("name", ""))

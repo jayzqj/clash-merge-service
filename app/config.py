@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import uuid
@@ -37,6 +38,8 @@ DEFAULTS: dict = {
     "merged_public_url": "",
     "output_path": "/var/www/xiuyuan/jay_filtered.yaml",
     "purity_enabled": True,
+    "purity_filter_enabled": False,
+    "purity_threshold": 15,
     "purity_info_url": "https://my.123169.xyz/v1/info",
     "purity_workers": 1,
     # Delay screen before the per-node purity loop (see app/purity.py):
@@ -194,6 +197,14 @@ class Config:
         if not 1 <= workers <= MAX_PURITY_WORKERS:
             errors.append(
                 f"purity_workers must be between 1 and {MAX_PURITY_WORKERS}")
+        threshold = self.data.get("purity_threshold", 15)
+        if (isinstance(threshold, bool)
+                or not isinstance(threshold, (int, float))
+                or not math.isfinite(threshold) or not 0 <= threshold <= 100):
+            errors.append("纯净度预留必须是 0–100 之间的数字")
+        if (self.data.get("purity_filter_enabled", False)
+                and not self.data.get("purity_enabled", True)):
+            errors.append("开启纯净度过滤时必须同时启用纯净度检测")
         front = self.data.get("check_front")
         if front is not None:
             if not isinstance(front, dict):

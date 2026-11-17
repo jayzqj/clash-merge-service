@@ -9,6 +9,7 @@ config.json
 data/
 state.json
 availability.json
+purity_history.json
 # Python
 __pycache__/
 *.pyc

@@ -153,6 +153,8 @@ class SettingsIn(BaseModel):
     subconverter_base: str | None = None
     output_path: str | None = None
     purity_enabled: bool | None = None
+    purity_filter_enabled: bool | None = None
+    purity_threshold: float | None = Field(default=None, ge=0, le=100, strict=True)
     purity_workers: int | None = None
     purity_delay_screen: bool | None = None
     check_front_enabled: bool | None = None
@@ -203,6 +205,10 @@ async def api_put_config(body: SettingsIn, request: Request,
         data["output_path"] = body.output_path.strip()
     if body.purity_enabled is not None:
         data["purity_enabled"] = body.purity_enabled
+    if body.purity_filter_enabled is not None:
+        data["purity_filter_enabled"] = body.purity_filter_enabled
+    if body.purity_threshold is not None:
+        data["purity_threshold"] = body.purity_threshold
     if body.purity_workers is not None:
         data["purity_workers"] = body.purity_workers
     if body.purity_delay_screen is not None:

@@ -18,6 +18,7 @@
   --r:10px;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html{background:var(--bg)}
 body{margin:0;color:var(--ink);font:14px/1.55 var(--sans);-webkit-text-size-adjust:100%}
 /* backdrop: two soft glows over a faint 32px grid */
@@ -323,9 +324,15 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:none;border
     <h3>纯净度检测</h3>
     <div class="opts">
       <label class="opt"><input type="checkbox" role="switch" id="purity"><span class="opt-body"><span class="opt-title">启用纯净度检测</span>
-        <span class="opt-desc">mihomo 逐节点自查；关则全部标记未测，仍保留全部节点</span></span></label>
+        <span class="opt-desc">mihomo 逐节点自查；本轮未测到分数时沿用上次成功分数，连续失败三轮仍隐藏</span></span></label>
       <label class="opt"><input type="checkbox" role="switch" id="delayScreen"><span class="opt-body"><span class="opt-title">检测前先做延迟筛选</span>
         <span class="opt-desc">延迟测试不通过的节点只做 1 次 15 秒的检测，不再重试 3 次；关则每个节点都按 3 次 × 30 秒检测</span></span></label>
+    </div>
+    <label class="opt"><input type="checkbox" role="switch" id="purityFilter" aria-controls="purityThresholdField"><span class="opt-body"><span class="opt-title">纯净度过滤</span>
+      <span class="opt-desc">按本轮分数过滤；检测失败时用上次成功分数比较。仅返回分数不高于预留值的节点，没有任何分数的不返回；连续失败三轮仍隐藏</span></span></label>
+    <div class="fields" id="purityThresholdField" hidden>
+      <div class="f"><label for="purityThreshold">纯净度 预留%</label><input type="number" id="purityThreshold" min="0" max="100" step="any" inputmode="decimal" value="15" aria-describedby="purityThresholdHelp">
+        <small id="purityThresholdHelp">只填 0–100 的数字，例如 15 表示保留 ≤15% 的节点，包含 15%；分数越低越好。保存后从下一轮完整检测生效；无符合条件的节点时返回空节点列表。</small></div>
     </div>
     <div class="fields">
       <div class="f"><label for="workers">纯净度检测并行数（1–8）</label><input type="number" id="workers" min="1" max="8">
@@ -483,6 +490,12 @@ let lastRunKey = null;
 let fastTimer = null;
 let editingSubId = null;
 
+function updatePurityFilter(){
+  const enabled = $('purityFilter').checked;
+  $('purityThresholdField').hidden = !enabled;
+  $('purityThreshold').disabled = !enabled;
+  $('purityFilter').setAttribute('aria-expanded', String(enabled));
+}
 function fillForm(c){
   $('webhook').value = '';
   $('interval').value = c.interval_seconds;
@@ -491,6 +504,9 @@ function fillForm(c){
   $('subconv').value = c.subconverter_base||'';
   $('output').value = c.output_path||'';
   $('purity').checked = !!c.purity_enabled;
+  $('purityFilter').checked = !!c.purity_filter_enabled;
+  $('purityThreshold').value = c.purity_threshold ?? 15;
+  updatePurityFilter();
   $('delayScreen').checked = c.purity_delay_screen !== false;
   $('workers').value = c.purity_workers||1;
   $('frontEnabled').checked = !!c.check_front_enabled;
@@ -544,7 +560,7 @@ function renderStatus(s, lr){
   const total = (m||0)+(u||0);
   $('kPure').textContent = num(m);
   $('kPureSub').textContent = m === undefined ? (reapplied ? '重新应用规则不测纯净度' : '') :
-    ('未测 '+num(u)+' · 出口 IP 不符 '+num(lr.purity_mismatched_exit_ip));
+    ('未测 '+num(u)+' · 沿用旧分数 '+num(lr.purity_reused)+' · 出口 IP 不符 '+num(lr.purity_mismatched_exit_ip));
   $('kPureMeter').hidden = !(m !== undefined && total > 0);
   if(m !== undefined && total > 0){
     $('kPureBar').style.width = (100*m/total).toFixed(1)+'%';
@@ -575,6 +591,8 @@ function renderRun(lr){
   if(has('groups')) rows.push(kv('分组 / 规则', lr.groups+' 个分组 · '+num(lr.rules)+' 条规则 · '+num(lr.rule_providers)+' 个规则集'));
   if(has('low_purity_group')) rows.push(kv('优选分组', lr.low_purity_group+' · '+num(lr.low_purity_members)+' 个节点'));
   if(has('purity_delay_screen_failed')) rows.push(kv('延迟筛选', '未通过 '+lr.purity_delay_screen_failed+' 个，其中仍测到 '+num(lr.purity_delay_screen_rescued)+' 个'));
+  if(has('purity_reused')) rows.push(kv('沿用历史分数', lr.purity_reused+' 个（本轮未测到，仍计入检测失败）'));
+  if(has('purity_filter_enabled')) rows.push(kv('纯净度过滤', lr.purity_filter_enabled ? ('≤'+lr.purity_threshold+'% · 保留 '+lr.purity_filter_kept+' 个 · 排除 '+lr.purity_filter_excluded+' 个') : '关闭'));
   if(has('availability_omitted')) rows.push(kv('连续失败隐藏', lr.availability_omitted+' 个'+(lr.availability_anomaly_skipped ? '（本轮按检测环境故障处理，不计失败）' : '')));
   if(has('backend_total')) rows.push(kv('后置节点', lr.backend_total+' 个 · TCP 已注入 '+num(lr.backend_tcp_injected)+' · UDP 未注入 '+num(lr.backend_udp_no_dialer)));
   if(has('guard_previous_proxies')) rows.push(kv('上一版节点数', lr.guard_previous_proxies));
@@ -775,17 +793,30 @@ async function toggleSub(id, enabled){
     say($('subMsg'), startedMsg(r, enabled?'已启用':'已停用'), 'ok'); tick();
   }catch(e){ say($('subMsg'), '失败：'+e.message, 'bad'); } }
 async function saveSettings(){
+  if($('purityFilter').checked){
+    if(!$('purity').checked){
+      say($('setMsg'), '开启纯净度过滤时必须同时启用纯净度检测。', 'bad');
+      $('purity').focus(); return;
+    }
+    const threshold = $('purityThreshold').valueAsNumber;
+    if(!Number.isFinite(threshold) || threshold < 0 || threshold > 100){
+      say($('setMsg'), '纯净度预留必须是 0–100 之间的数字。', 'bad');
+      $('purityThreshold').focus(); return;
+    }
+  }
   const body = {interval_seconds: parseInt($('interval').value,10),
     notify_enabled: $('notify').value==='true',
     ini_url: $('ini').value.trim(),
     subconverter_base: $('subconv').value.trim(),
     output_path: $('output').value.trim(),
     purity_enabled: $('purity').checked,
+    purity_filter_enabled: $('purityFilter').checked,
     purity_delay_screen: $('delayScreen').checked,
     purity_workers: parseInt($('workers').value,10)||1,
     check_front_enabled: $('frontEnabled').checked,
     use_remote_subconverter: $('remote').checked,
     merged_public_url: $('mergedUrl').value.trim()};
+  if($('purityFilter').checked) body.purity_threshold = $('purityThreshold').valueAsNumber;
   const w = $('webhook').value.trim();
   if(w) body.wechat_webhook = w;
   try{ const r = await api('/api/config', jsonOpts('PUT', body));
@@ -837,6 +868,7 @@ guard($('btnCancelName'), () => {
   $('btnRefresh').focus();
 });
 guard($('btnSave'), saveSettings);
+$('purityFilter').addEventListener('change', updatePurityFilter);
 guard($('btnReload'), reloadForm);
 guard($('btnIni'), () => loadIni(true));
 guard($('btnClearAvail'), clearAvail);
