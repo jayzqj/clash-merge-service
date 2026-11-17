@@ -233,6 +233,42 @@ class PipelineTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         _, doc = await self.run_round([p], result(p, 70))
         self.assertEqual(doc["proxies"], [])
 
+    async def test_success_notification_uses_round_filter_and_actual_next_schedule(self):
+        self.cfg.data.update(notify_enabled=True, wechat_webhook="https://example.invalid/webhook",
+                             purity_filter_enabled=True, purity_threshold=15)
+        def change_interval():
+            self.cfg.data.update(interval_seconds=7200, purity_threshold=30)
+        p = node()
+        with patch.object(pipeline, "send_wechat", AsyncMock(return_value=True)) as send:
+            report, _ = await self.run_round([p], result(p, 5), during_check=change_interval)
+        message = send.await_args.args[1]
+        self.assertIn("纯净度过滤：开启（≤15%）", message)
+        self.assertIn("执行间隔：120 分钟", message)
+        self.assertIn(f"下次执行时间：{report['next_run']}（北京时间）", message)
+        self.assertRegex(message, r"用时：\d+(?:\.\d+)? 分钟")
+        self.assertIn("后置节点：0 个\n", message)
+        for removed in ("TCP", "UDP", "dialer-proxy", "发送方", " 秒"):
+            self.assertNotIn(removed, message)
+        persisted = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(persisted["next_run"], report["next_run"])
+        self.assertEqual(persisted["last_run"]["interval_seconds"], 7200)
+
+    async def test_early_failure_notification_includes_settings_and_next_schedule(self):
+        self.cfg.data.update(subscriptions=[], notify_enabled=True,
+                             wechat_webhook="https://example.invalid/webhook",
+                             purity_filter_enabled=False, purity_threshold=12.5)
+        state = pipeline.ServiceState()
+        with patch.object(pipeline, "send_wechat", AsyncMock(return_value=True)) as send:
+            report = await pipeline.run_pipeline(self.cfg, state)
+        self.assertFalse(report["ok"])
+        message = send.await_args.args[1]
+        self.assertIn("失败步骤：fetch", message)
+        self.assertIn("纯净度过滤：关闭（配置值：12.5%）", message)
+        self.assertIn("执行间隔：60 分钟", message)
+        self.assertIn(f"下次执行时间：{state.next_run}（北京时间）", message)
+        self.assertRegex(message, r"用时：\d+(?:\.\d+)? 分钟")
+        self.assertNotIn("发送方", message)
+
     def test_guard_still_rejects_unexpected_empty_and_source_collapse(self):
         Path(self.cfg.output_path).write_text(yaml.safe_dump({"proxies": [node(i) for i in range(100)]}))
         for doc, report in [({"proxies": []}, {}), ({"proxies": [node()]}, {}),

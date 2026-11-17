@@ -332,7 +332,9 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
     live_cfg = cfg
     cfg = Config(data=copy.deepcopy(cfg.data), path=cfg.path)
     started = time.time()
-    report: dict = {"started_at": _now_cst(), "ok": False}
+    report: dict = {"started_at": _now_cst(), "ok": False,
+                    "purity_filter_enabled": cfg.data.get("purity_filter_enabled", False),
+                    "purity_threshold": cfg.data.get("purity_threshold", 15)}
     step = "fetch"
     try:
         subs = cfg.enabled_subscriptions
@@ -531,6 +533,8 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             state.last_error = ""
         state.next_run = (datetime.now(CST) +
                           timedelta(seconds=live_cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        report["interval_seconds"] = live_cfg.interval_seconds
+        report["next_run"] = state.next_run
         persist_state(cfg, state)
         # A manual run moved next_run: let the scheduler re-read it.
         _wake_event().set()
@@ -542,7 +546,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
         else:
             await send_wechat(cfg.wechat_webhook, failure_text(
                 str(report.get("failed_step", step)),
-                str(report.get("error", ""))))
+                str(report.get("error", "")), report))
     return report
 
 

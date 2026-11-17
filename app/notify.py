@@ -6,8 +6,7 @@ Rules (per spec):
 - When on: send on BOTH success and failure. Never send for a mere
   node-count/content change with no success/failure status.
 - Failure messages name the step and the reason.
-- Every message ends with exactly:
-  ``发送方：Muse（账号：azqjzm@gmail.com）``
+- Messages include filter settings, duration in minutes and the next schedule.
 - The webhook URL is never logged.
 """
 from __future__ import annotations
@@ -20,15 +19,6 @@ from app.fetcher import make_client
 
 log = logging.getLogger(__name__)
 
-FOOTER = "发送方：Muse（账号：azqjzm@gmail.com）"
-
-
-def _with_footer(content: str) -> str:
-    content = content.rstrip()
-    if not content.endswith(FOOTER):
-        content += f"\n{FOOTER}"
-    return content
-
 
 async def send_wechat(webhook: str, content: str) -> bool:
     if not webhook:
@@ -38,7 +28,7 @@ async def send_wechat(webhook: str, content: str) -> bool:
             resp = await client.post(
                 webhook,
                 json={"msgtype": "text",
-                      "text": {"content": _with_footer(content)}})
+                      "text": {"content": content.rstrip()}})
         ok = resp.status_code == 200
         if not ok:
             log.warning("notify: wechat HTTP %s", resp.status_code)
@@ -46,6 +36,22 @@ async def send_wechat(webhook: str, content: str) -> bool:
     except Exception as e:  # noqa: BLE001 - notification must not crash a run
         log.warning("notify: wechat send failed: %s", e)
         return False
+
+
+def _minutes(seconds) -> str:
+    return f"{float(seconds or 0) / 60:.2f}".rstrip("0").rstrip(".")
+
+
+def _execution_text(report: dict) -> str:
+    threshold = f"{float(report.get('purity_threshold', 15)):g}%"
+    filtering = (f"开启（≤{threshold}）" if report.get("purity_filter_enabled")
+                 else f"关闭（配置值：{threshold}）")
+    return (
+        f"纯净度过滤：{filtering}\n"
+        f"执行间隔：{_minutes(report.get('interval_seconds'))} 分钟\n"
+        f"下次执行时间：{report.get('next_run') or '待安排'}（北京时间）\n"
+        f"用时：{_minutes(report.get('duration_seconds'))} 分钟\n"
+    )
 
 
 def success_text(report: dict) -> str:
@@ -64,18 +70,17 @@ def success_text(report: dict) -> str:
         f"节点：合并 {report.get('total_in', 0)} 个，去重 {report.get('dedup_removed', 0)} 个，"
         f"最终 {report.get('proxies_out', 0)} 个\n"
         f"纯净度：已测 {report.get('purity_measured', 0)} 个，未测 {report.get('purity_unmeasured', 0)} 个\n"
-        f"后置节点：{report.get('backend_total', 0)} 个，"
-        f"其中 TCP 已注入 dialer-proxy {report.get('backend_tcp_injected', 0)} 个，"
-        f"UDP 未注入 {report.get('backend_udp_no_dialer', 0)} 个\n"
-        f"用时：{report.get('duration_seconds', 0)} 秒\n"
+        f"后置节点：{report.get('backend_total', 0)} 个\n"
+        f"{_execution_text(report)}"
         "最终地址：https://xiuyuan.9527653.xyz/jay_filtered.yaml"
     )
 
 
-def failure_text(step: str, reason: str) -> str:
+def failure_text(step: str, reason: str, report: dict | None = None) -> str:
     return (
         "Clash 合并订阅：本次执行失败\n"
         f"失败步骤：{step}\n"
         f"原因：{reason}\n"
+        f"{_execution_text(report) if report is not None else ''}"
         "已保留上一次的 jay_filtered.yaml，未用不完整结果覆盖。"
     )
