@@ -30,6 +30,8 @@ MAX_INTERVAL_SECONDS = 86400
 DEFAULTS: dict = {
     "subscriptions": [],
     "interval_seconds": 3600,
+    "execution_start": "08:00",
+    "execution_end": "23:59",
     "notify_enabled": True,
     "wechat_webhook": "",
     "ini_url": "https://gist.githubusercontent.com/jayzqj/da3509f0267cbc7c8d55fe74e522d0d2/raw/custom_whitelist_jay5.ini",
@@ -179,6 +181,12 @@ class Config:
     # -- validation -----------------------------------------------------
     def validate(self) -> list[str]:
         errors: list[str] = []
+        for key, default in (("execution_start", "08:00"), ("execution_end", "23:59")):
+            value = self.data.get(key, default)
+            if not isinstance(value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+                errors.append(f"{key} 必须是 HH:MM 格式的时间（00:00–23:59）")
+        if self.data.get("execution_start", "08:00") == self.data.get("execution_end", "23:59"):
+            errors.append("执行时段的开始和结束时间不能相同；全天执行请设置 00:00–23:59")
         try:
             interval = int(self.data.get("interval_seconds", 3600))
         except (TypeError, ValueError):

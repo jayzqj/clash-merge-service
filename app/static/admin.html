@@ -149,10 +149,10 @@ td.empty{padding:14px 10px}
 .btn.sm{padding:4px 10px;font-size:12px}
 .btn[aria-disabled=true]{opacity:.55;cursor:progress}
 .actions-row{display:flex;flex-wrap:wrap;gap:8px}
-input[type=text],input[type=number],select{width:100%;font:13px var(--mono);color:var(--ink);background:var(--field);
+input[type=text],input[type=number],input[type=time],select{width:100%;font:13px var(--mono);color:var(--ink);background:var(--field);
   border:1px solid var(--edge);border-radius:7px;padding:8px 10px;min-width:0}
 select{font-family:var(--sans)}
-input[type=text]:focus,input[type=number]:focus,select:focus{outline:none;border-color:var(--accent);
+input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:focus{outline:none;border-color:var(--accent);
   box-shadow:0 0 0 3px rgba(53,200,244,.18)}
 ::placeholder{color:#73819c}
 .add-row{display:flex;gap:8px}
@@ -313,6 +313,9 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:none;border
     <div class="fields">
       <div class="f"><label for="interval">执行间隔（秒，300–86400）</label><input type="number" id="interval" min="300" max="86400"></div>
       <div class="f"><label for="notify">企业微信通知</label><select id="notify"><option value="true">开（成功和失败都发）</option><option value="false">关（不发任何通知）</option></select></div>
+      <div class="f"><label for="executionStart">每天开始执行时间（北京时间）</label><input type="time" id="executionStart" step="60" required value="08:00" aria-describedby="executionWindowHelp"></div>
+      <div class="f"><label for="executionEnd">每天结束执行时间（北京时间）</label><input type="time" id="executionEnd" step="60" required value="23:59" aria-describedby="executionWindowHelp"></div>
+      <div class="f wide"><small id="executionWindowHelp">仅在此时段内启动完整检测，包含结束分钟；时段外保存设置或点击立即执行，会等到下个开始时间。已启动的一轮允许完成。开始晚于结束表示跨天；全天执行可填 00:00–23:59。</small></div>
       <div class="f wide"><div class="lab-row"><label for="webhook">企业微信 webhook</label><small id="webhookState"></small></div>
         <input type="text" id="webhook" placeholder="留空保持不变" autocomplete="off" spellcheck="false">
         <small>留空 = 保持现有值；页面和接口从不回显真实地址</small></div>
@@ -499,6 +502,8 @@ function updatePurityFilter(){
 function fillForm(c){
   $('webhook').value = '';
   $('interval').value = c.interval_seconds;
+  $('executionStart').value = c.execution_start ?? '08:00';
+  $('executionEnd').value = c.execution_end ?? '23:59';
   $('notify').value = String(c.notify_enabled);
   $('ini').value = c.ini_url||'';
   $('subconv').value = c.subconverter_base||'';
@@ -742,6 +747,7 @@ async function loadIni(force){
 }
 
 function startedMsg(r, what){
+  if(r.outside_execution_window) return what+'，当前不在执行时段内，下次执行：'+(r.next_run||'待安排')+'（北京时间）。';
   return r.run_started ? (what+'，正在执行一轮。') : (what+'。'+(r.note||'当前已有一轮在执行，改动从下一轮生效。'));
 }
 
@@ -793,6 +799,9 @@ async function toggleSub(id, enabled){
     say($('subMsg'), startedMsg(r, enabled?'已启用':'已停用'), 'ok'); tick();
   }catch(e){ say($('subMsg'), '失败：'+e.message, 'bad'); } }
 async function saveSettings(){
+  if(!$('executionStart').value || !$('executionEnd').value || $('executionStart').value === $('executionEnd').value){
+    say($('setMsg'), '请填写不同的开始和结束时间；全天执行可填 00:00–23:59。', 'bad'); return;
+  }
   if($('purityFilter').checked){
     if(!$('purity').checked){
       say($('setMsg'), '开启纯净度过滤时必须同时启用纯净度检测。', 'bad');
@@ -805,6 +814,8 @@ async function saveSettings(){
     }
   }
   const body = {interval_seconds: parseInt($('interval').value,10),
+    execution_start: $('executionStart').value,
+    execution_end: $('executionEnd').value,
     notify_enabled: $('notify').value==='true',
     ini_url: $('ini').value.trim(),
     subconverter_base: $('subconv').value.trim(),

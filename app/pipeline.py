@@ -71,6 +71,7 @@ from app.names import normalize_name
 from app.notify import failure_text, send_wechat, success_text
 from app.purity import MihomoChecker
 from app.purity_history import apply_history, filter_by_purity
+from app.schedule import in_execution_window, next_execution, normalize_next_run
 
 log = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
@@ -134,9 +135,7 @@ def load_state(cfg: Config) -> ServiceState:
         state.runs_started = raw.get("runs_started", 0)
     except Exception:
         pass
-    if not state.next_run:
-        state.next_run = (datetime.now(CST) +
-                          timedelta(seconds=cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    state.next_run = normalize_next_run(cfg, state.next_run)
     return state
 
 
@@ -321,6 +320,11 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
 async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
     """Run one full round. Returns a report dict. Never raises for
     pipeline failures — they are recorded in the report and notified."""
+    if not in_execution_window(cfg):
+        if not state.running:
+            reschedule(state, cfg)
+        return {"ok": False, "outside_execution_window": True,
+                "next_run": state.next_run, "error": "当前不在任务执行时段内"}
     if not state.lock.acquire(blocking=False):
         state.runs_skipped_overlap += 1
         log.warning("pipeline: previous round still running, skipped this trigger")
@@ -531,9 +535,10 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             state.last_error = f"{report.get('failed_step')}: {report.get('error')}"
         else:
             state.last_error = ""
-        state.next_run = (datetime.now(CST) +
-                          timedelta(seconds=live_cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        state.next_run = next_execution(live_cfg)
         report["interval_seconds"] = live_cfg.interval_seconds
+        report["execution_start"] = live_cfg.data.get("execution_start", "08:00")
+        report["execution_end"] = live_cfg.data.get("execution_end", "23:59")
         report["next_run"] = state.next_run
         persist_state(cfg, state)
         # A manual run moved next_run: let the scheduler re-read it.
@@ -551,8 +556,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
 
 
 def reschedule(state: ServiceState, cfg: Config) -> None:
-    state.next_run = (datetime.now(CST) +
-                      timedelta(seconds=cfg.interval_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    state.next_run = next_execution(cfg)
     persist_state(cfg, state)
     # Wake the scheduler so it sleeps against the NEW next_run (an
     # interval shortened on /admin used to wait out the old delay).
@@ -566,14 +570,14 @@ async def scheduler_loop(cfg: Config, state: ServiceState) -> None:
     wake = _wake_event()
     while True:
         try:
-            try:
-                nxt = datetime.strptime(state.next_run, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST)
-            except Exception:
-                nxt = datetime.now(CST) + timedelta(seconds=cfg.interval_seconds)
-                state.next_run = nxt.strftime("%Y-%m-%d %H:%M:%S")
+            wake.clear()
+            normalized = normalize_next_run(cfg, state.next_run)
+            if normalized != state.next_run:
+                state.next_run = normalized
+                persist_state(cfg, state)
+            nxt = datetime.strptime(state.next_run, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST)
             delay = (nxt - datetime.now(CST)).total_seconds()
             if delay > 0:
-                wake.clear()
                 try:
                     await asyncio.wait_for(wake.wait(), timeout=delay)
                     continue  # rescheduled: recompute against new next_run

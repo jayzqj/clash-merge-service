@@ -35,6 +35,7 @@ class ConfigFixture:
         self.root = Path(temp.name)
         data = copy.deepcopy(DEFAULTS)
         data.update(notify_enabled=False, output_path=str(self.root / "out.yaml"),
+                    execution_start="00:00", execution_end="23:59",
                     subscriptions=[{"id": "test", "url": "https://example.invalid/sub"}])
         self.cfg = Config(data=data, path=self.root / "config.json")
 
@@ -244,6 +245,7 @@ class PipelineTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         message = send.await_args.args[1]
         self.assertIn("纯净度过滤：开启（≤15%）", message)
         self.assertIn("执行间隔：120 分钟", message)
+        self.assertIn("执行时段：每天 00:00–23:59（北京时间）", message)
         self.assertIn(f"下次执行时间：{report['next_run']}（北京时间）", message)
         self.assertRegex(message, r"本轮用时：\d+(?:\.\d+)? 分钟")
         self.assertIn("后置节点：0 个\n", message)

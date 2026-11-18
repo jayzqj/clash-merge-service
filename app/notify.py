@@ -49,6 +49,7 @@ def _execution_text(report: dict) -> str:
     return (
         f"纯净度过滤：{filtering}\n"
         f"执行间隔：{_minutes(report.get('interval_seconds'))} 分钟\n"
+        f"执行时段：每天 {report.get('execution_start', '08:00')}–{report.get('execution_end', '23:59')}（北京时间）\n"
         f"下次执行时间：{report.get('next_run') or '待安排'}（北京时间）\n"
         f"本轮用时：{_minutes(report.get('duration_seconds'))} 分钟\n"
     )

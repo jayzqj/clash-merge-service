@@ -83,6 +83,10 @@ def _start_run() -> bool:
     state = _state()
     if state.running or state.lock.locked():
         return False
+    from app.schedule import in_execution_window
+    if not in_execution_window(_cfg()):
+        reschedule(state, _cfg())
+        return False
     _spawn(run_pipeline(_cfg(), state))
     return True
 
@@ -147,6 +151,8 @@ async def api_get_config(_user: str = Depends(_check_auth)):
 
 class SettingsIn(BaseModel):
     interval_seconds: int | None = None
+    execution_start: str | None = None
+    execution_end: str | None = None
     notify_enabled: bool | None = None
     wechat_webhook: str | None = None  # empty/absent = keep current
     ini_url: str | None = None
@@ -178,8 +184,11 @@ def _changed_response(**extra) -> dict:
     out = {"ok": True, "run_started": started,
            "next_run": _state().next_run, **extra}
     if not started:
-        out["note"] = ("a round is already running; the change takes "
-                       "effect from the next round")
+        from app.schedule import in_execution_window
+        out["outside_execution_window"] = not in_execution_window(_cfg())
+        out["note"] = ("当前不在任务执行时段内，已安排到允许的时间执行"
+                       if out["outside_execution_window"] else
+                       "a round is already running; the change takes effect from the next round")
     return out
 
 
@@ -193,6 +202,10 @@ async def api_put_config(body: SettingsIn, request: Request,
     data = copy.deepcopy(cfg.data)
     if body.interval_seconds is not None:
         data["interval_seconds"] = body.interval_seconds
+    if body.execution_start is not None:
+        data["execution_start"] = body.execution_start
+    if body.execution_end is not None:
+        data["execution_end"] = body.execution_end
     if body.notify_enabled is not None:
         data["notify_enabled"] = body.notify_enabled
     if body.wechat_webhook:
@@ -292,6 +305,11 @@ async def api_patch_subscription(sub_id: str, body: SubscriptionPatch,
 @app.post("/api/run")
 async def api_run_now(_user: str = Depends(_check_auth)):
     if not _start_run():
+        from app.schedule import in_execution_window
+        if not in_execution_window(_cfg()):
+            return {"ok": False, "outside_execution_window": True,
+                    "next_run": _state().next_run,
+                    "error": f"当前不在任务执行时段内，下次执行：{_state().next_run}（北京时间）"}
         return {"ok": False, "error": "a round is already running"}
     return {"ok": True, "run_started": True}
 
