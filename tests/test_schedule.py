@@ -105,6 +105,56 @@ class ApiTests(Fixture, unittest.TestCase):
         self.assertEqual(r["next_run"],"2026-11-18 08:00:00")
         self.spawn.assert_not_called()
 
+    def test_save_only_preserves_pending_round_and_persists_settings(self):
+        self.state.next_run="2026-11-18 10:00:00"
+        with patch.object(schedule,"now_cst",return_value=at("2026-11-18T09:00:00")):
+            r=self.client.put("/api/config",json={"run_now":False,"purity_threshold":12,
+                                                   "interval_seconds":7200})
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertTrue(r.json()["saved_only"])
+        self.assertFalse(r.json()["run_started"])
+        self.assertEqual(r.json()["next_run"],"2026-11-18 10:00:00")
+        saved=Config.load(self.cfg.path).data
+        self.assertEqual(saved["purity_threshold"],12)
+        self.assertEqual(saved["interval_seconds"],7200)
+        self.assertNotIn("run_now",saved)
+        self.spawn.assert_not_called()
+
+    def test_save_only_adjusts_window_without_starting(self):
+        self.state.next_run="2026-11-18 08:00:00"
+        r=self.client.put("/api/config",json={"run_now":False,"execution_start":"09:00"})
+        self.assertTrue(r.json()["saved_only"])
+        self.assertEqual(r.json()["next_run"],"2026-11-18 09:00:00")
+        self.spawn.assert_not_called()
+
+    def test_save_only_does_not_interrupt_running_round(self):
+        self.state.running=True
+        self.state.lock.acquire()
+        self.addCleanup(self.state.lock.release)
+        old=self.state.next_run
+        r=self.client.put("/api/config",json={"run_now":False,"purity_threshold":10})
+        self.assertTrue(r.json()["saved_only"])
+        self.assertTrue(self.state.running)
+        self.assertTrue(self.state.lock.locked())
+        self.assertEqual(self.state.next_run,old)
+        self.spawn.assert_not_called()
+
+    def test_save_only_invalid_settings_leave_config_unchanged(self):
+        before=self.cfg.path.read_bytes()
+        for body in [{"run_now":False,"interval_seconds":1},{"run_now":"false"}]:
+            r=self.client.put("/api/config",json=body)
+            self.assertIn(r.status_code,(400,422))
+            self.assertEqual(self.cfg.path.read_bytes(),before)
+        self.spawn.assert_not_called()
+
+    def test_explicit_save_and_run_still_starts_inside_window(self):
+        self.spawn.side_effect=lambda coro:coro.close()
+        with patch.object(schedule,"now_cst",return_value=at("2026-11-18T09:00:00")):
+            r=self.client.put("/api/config",json={"run_now":True,"purity_threshold":10})
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertTrue(r.json()["run_started"])
+        self.spawn.assert_called_once()
+
     def test_manual_trigger_inside_window_starts(self):
         self.spawn.side_effect=lambda coro:coro.close()
         with patch.object(schedule,"now_cst",return_value=at("2026-11-18T08:00:00")):

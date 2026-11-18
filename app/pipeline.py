@@ -555,8 +555,14 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
     return report
 
 
-def reschedule(state: ServiceState, cfg: Config) -> None:
-    state.next_run = next_execution(cfg)
+def reschedule(state: ServiceState, cfg: Config, *, preserve_next: bool = False) -> None:
+    if preserve_next:
+        # Save-only keeps the pending round, unless its time violates the new window.
+        # A running round will compute the next schedule itself when it finishes.
+        if not state.running:
+            state.next_run = normalize_next_run(cfg, state.next_run)
+    else:
+        state.next_run = next_execution(cfg)
     persist_state(cfg, state)
     # Wake the scheduler so it sleeps against the NEW next_run (an
     # interval shortened on /admin used to wait out the old delay).

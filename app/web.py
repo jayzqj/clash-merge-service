@@ -150,6 +150,7 @@ async def api_get_config(_user: str = Depends(_check_auth)):
 
 
 class SettingsIn(BaseModel):
+    run_now: bool = Field(default=True, strict=True)
     interval_seconds: int | None = None
     execution_start: str | None = None
     execution_end: str | None = None
@@ -238,8 +239,13 @@ async def api_put_config(body: SettingsIn, request: Request,
         return JSONResponse(status_code=400, content={"errors": errors})
     cfg.data = data
     cfg.save()
+    if not body.run_now:
+        reschedule(_state(), cfg, preserve_next=True)
+        return {"ok": True, "run_started": False, "saved_only": True,
+                "next_run": _state().next_run,
+                "note": "已保存，下轮执行时使用新配置"}
     reschedule(_state(), cfg)
-    # Spec: saving any change triggers an immediate full run.
+    # Legacy/default action still saves and triggers a round within its window.
     return _changed_response()
 
 
