@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import os
 import shutil
 import subprocess
 import time
@@ -171,6 +172,10 @@ class MihomoChecker:
         # Refuse occupied ports; never connect to an existing Clash instance.
         for port in (self.mixed_port, self.controller_port):
             with socket.socket() as probe:
+                if os.name != "nt":
+                    # A preceding test stage may leave TIME_WAIT connections.
+                    # Match Go's listener reuse, while still rejecting a live listener.
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
                     probe.bind(("127.0.0.1", port))
                 except OSError:
