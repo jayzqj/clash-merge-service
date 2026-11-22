@@ -16,7 +16,7 @@ def desktop_data_dir() -> Path:
     explicit = os.environ.get("CLASH_MERGE_DATA_DIR")
     if explicit:
         return Path(explicit).resolve()
-    return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ClashMerge"
+    return Path("D:/ClashMerge")
 
 
 def desktop_url() -> str:

@@ -52,17 +52,19 @@ def prepare_vendor():
     (VENDOR / "asset-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-def build():
+def build(dist_dir=None):
+    dist_dir = Path(dist_dir).resolve() if dist_dir else ROOT / "dist"
     if sys.platform != "win32":
         raise SystemExit("Build the Windows executable on Windows x64")
     for name in ("clash-merge-mihomo.exe", "geosite.dat", "geoip.dat", "Country.mmdb", "geoip.metadb", "MIHOMO-LICENSE"):
         if not (VENDOR / name).is_file():
             raise SystemExit(f"Missing vendor/{name}; run without --skip-download first")
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--windowed",
+                    "--distpath", str(dist_dir),
                     "--name", "ClashMerge", "--specpath", "build", "--add-data", str(ROOT / "app/static") + ";app/static",
                     "--add-data", str(VENDOR) + ";vendor", "--hidden-import", "pystray._win32",
                     "--collect-submodules", "uvicorn", "desktop.py"], cwd=ROOT, check=True)
-    output = ROOT / "dist" / "ClashMerge"
+    output = dist_dir / "ClashMerge"
     shutil.copyfile(ROOT / "WINDOWS.md", output / "Windows使用说明.md")
     shutil.copyfile(ROOT / "THIRD_PARTY.md", output / "THIRD_PARTY.md")
     licenses = output / "licenses"
@@ -79,7 +81,7 @@ def build():
                 if source.is_file():
                     shutil.copyfile(source, licenses / (name + "-" + str(entry).replace("/", "_").replace("\\", "_")))
     (licenses / "versions.txt").write_text("\n".join(sorted(inventory)), encoding="utf-8")
-    archive = shutil.make_archive(str(ROOT / "dist" / "ClashMerge-Windows-x64"), "zip", ROOT / "dist", "ClashMerge")
+    archive = shutil.make_archive(str(dist_dir / "ClashMerge-Windows-x64"), "zip", dist_dir, "ClashMerge")
     digest = hashlib.sha256(Path(archive).read_bytes()).hexdigest()
     Path(archive + ".sha256").write_text(digest + "  " + Path(archive).name + "\n", encoding="ascii")
     print("Built:", archive, "SHA256:", digest, flush=True)
@@ -89,8 +91,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--download-only", action="store_true")
+    parser.add_argument("--dist-dir", help="Build into a separate directory when an older EXE is locked")
     args = parser.parse_args()
     if not args.skip_download:
         prepare_vendor()
     if not args.download_only:
-        build()
+        build(args.dist_dir)

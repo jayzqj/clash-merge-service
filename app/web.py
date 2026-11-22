@@ -168,9 +168,11 @@ async def api_get_config(_user: str = Depends(_check_auth)):
     view["subscription_url"] = runtime.subscription_url()
     view["desktop"] = {"enabled": runtime.desktop_mode()}
     if runtime.desktop_mode():
+        from app.resources import resource_recommendation
         view["desktop"].update(autorun=runtime.autorun_enabled(),
                                data_dir=str(runtime.desktop_data_dir()),
-                               core_available=Path(_cfg().data["mihomo_bin"]).is_file())
+                               core_available=Path(_cfg().data["mihomo_bin"]).is_file(),
+                               resources=await asyncio.to_thread(resource_recommendation))
     return view
 
 

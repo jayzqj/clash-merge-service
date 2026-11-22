@@ -142,4 +142,7 @@ def main(keep_running=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keep-running", action="store_true")
-    main(parser.parse_args().keep_running)
+    parser.add_argument("--exe", type=Path, default=EXE)
+    args = parser.parse_args()
+    EXE = args.exe.resolve()
+    main(args.keep_running)

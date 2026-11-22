@@ -352,7 +352,9 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
     </div>
     <div class="fields">
       <div class="f"><label for="workers">纯净度检测并行数（1–8）</label><input type="number" id="workers" min="1" max="8">
-        <small>每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4</small></div>
+        <small id="workersHelp">每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4</small>
+        <div id="workerAdvice" class="readout" hidden></div>
+        <button type="button" class="btn sm" id="btnUseRecommended" hidden>采用当前推荐值</button></div>
       <div class="f"><span class="lab">静态节点检测前置</span><div class="readout" id="checkFront">—</div>
         <small>可在下方填写或替换前置；连接密码不回显</small></div>
     </div>
@@ -505,6 +507,7 @@ function changed(key, data){
 }
 
 let formLoaded = false;
+let recommendedWorkers = null;
 let lastRunKey = null;
 let fastTimer = null;
 let editingSubId = null;
@@ -661,6 +664,14 @@ function renderConfig(c){
   if(desktop.enabled){
     $('desktopInfo').textContent = '数据目录：'+desktop.data_dir+' · 检测内核：'+(desktop.core_available?'就绪':'缺失');
     if(changed('autorun', desktop.autorun)) $('autorun').checked = !!desktop.autorun;
+    const resources = desktop.resources||{};
+    $('workersHelp').textContent = '按当前可用内存和 CPU 空闲量估算，每 30 秒刷新建议；采用后点击保存，下轮生效。不会自动覆盖手动设置。';
+    $('workerAdvice').hidden = false;
+    $('btnUseRecommended').hidden = !resources.available;
+    recommendedWorkers = resources.available ? resources.recommended_workers : null;
+    $('workerAdvice').textContent = resources.available ?
+      '推荐 '+recommendedWorkers+' 个并行 · 可用内存 '+resources.available_memory_gib+' / '+resources.total_memory_gib+' GiB · CPU 使用率 '+resources.cpu_percent+'%（'+resources.logical_cpus+' 逻辑核）'+
+      (resources.memory_tight ? '。当前内存紧张，建议关闭占用较大的程序后再检测。' : '。已为前台程序预留资源。') : (resources.reason||'暂时无法读取本机资源');
   }
   $('webhookState').textContent = c.wechat_webhook ? '当前：已设置' : '当前：未设置';
   const cf = c.check_front||{};
@@ -925,6 +936,12 @@ guard($('btnReload'), reloadForm);
 guard($('btnIni'), () => loadIni(true));
 guard($('btnClearAvail'), clearAvail);
 guard($('btnCopy'), copyUrl);
+guard($('btnUseRecommended'), () => {
+  if(recommendedWorkers !== null){
+    $('workers').value = recommendedWorkers;
+    say($('setMsg'), '已填入当前推荐并行数 '+recommendedWorkers+'；点击“只保存，下轮生效”即可应用。', 'info');
+  }
+});
 guard($('btnAutorun'), async () => {
   try{
     const r = await api('/api/desktop/autorun', jsonOpts('PUT', {enabled:$('autorun').checked}));

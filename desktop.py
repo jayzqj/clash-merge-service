@@ -48,6 +48,11 @@ def prepare_data(data):
     from app.runtime import resource_root
     data.mkdir(parents=True, exist_ok=True)
     cfg = Config.load()
+    if not cfg.path.exists():
+        from app.resources import resource_recommendation
+        recommended = resource_recommendation()
+        if recommended.get("available"):
+            cfg.data["purity_workers"] = recommended["recommended_workers"]
     # The binary lives beside this version of the app, never in the user's PATH.
     cfg.data["mihomo_bin"] = str(resource_root() / "vendor" / "clash-merge-mihomo.exe")
     if not Path(cfg.data["mihomo_bin"]).is_file():
