@@ -66,9 +66,10 @@ import logging
 import os
 import re
 import shutil
-import signal
 import subprocess
 import time
+import secrets
+import socket
 from pathlib import Path
 
 import httpx
@@ -76,6 +77,7 @@ import yaml
 
 from app.config import MAX_PURITY_WORKERS as MAX_WORKERS
 from app.merge import dedup_key, expected_ip
+from app.processes import start_process, stop_process, STOPPING
 
 log = logging.getLogger(__name__)
 
@@ -200,6 +202,7 @@ class MihomoChecker:
         self.controller_port = int(config.data.get("mihomo_controller_port", 9090)) + worker_id
         self.info_url = config.data.get("purity_info_url",
                                         "https://my.123169.xyz/v1/info")
+        self.controller_secret = secrets.token_urlsafe(24)
         # Optional dedicated front for backend checks: used only when
         # check_front is a full proxy dict AND check_front_enabled is
         # on. Default: backend nodes are checked direct.
@@ -217,6 +220,14 @@ class MihomoChecker:
             log.warning("purity: mihomo binary not found (%s), skipping check",
                         self.cfg.data.get("mihomo_bin"))
             return False
+        # Refuse occupied ports; never connect to an existing Clash instance.
+        for port in (self.mixed_port, self.controller_port):
+            with socket.socket() as probe:
+                try:
+                    probe.bind(("127.0.0.1", port))
+                except OSError:
+                    log.warning("purity worker %d: port %d is occupied", self.worker_id, port)
+                    return False
         if self.check_front:
             # Renamed internally: a check front sharing its name with
             # a subscription node would make mihomo refuse the config
@@ -231,6 +242,7 @@ class MihomoChecker:
             extra = []
         cfg = build_mihomo_config(proxies, front_name, self.mixed_port,
                                   self.controller_port, extra_proxies=extra)
+        cfg["secret"] = self.controller_secret
         self.workdir.mkdir(parents=True, exist_ok=True)
         cfg_path = self.workdir / "config.yaml"
         cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True,
@@ -238,19 +250,19 @@ class MihomoChecker:
         # The child keeps its own copy of the fd; close ours right
         # away so every round does not leak one file handle.
         with open(self.workdir / "mihomo.log", "a", encoding="utf-8") as logfile:
-            self.proc = subprocess.Popen(
+            self.proc = start_process(
                 [binary, "-f", str(cfg_path), "-d", str(self.workdir)],
-                stdout=logfile, stderr=subprocess.STDOUT,
-                start_new_session=True)
+                stdout=logfile, stderr=subprocess.STDOUT)
         for _ in range(30):
             if self.proc.poll() is not None:
                 log.warning("purity worker %d: mihomo exited early (code %s), "
                             "see %s", self.worker_id, self.proc.returncode,
                             self.workdir / "mihomo.log")
-                self.proc = None
+                self.stop()
                 return False
             try:
                 r = httpx.get(self._controller("/version"), timeout=3,
+                              headers={"Authorization": f"Bearer {self.controller_secret}"},
                               trust_env=False)
                 if r.status_code == 200:
                     return True
@@ -263,18 +275,12 @@ class MihomoChecker:
 
     def stop(self) -> None:
         if self.proc is not None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
-                self.proc.wait(timeout=10)
-            except Exception:
-                try:
-                    os.killpg(self.proc.pid, signal.SIGKILL)
-                except Exception:
-                    pass
+            stop_process(self.proc)
             self.proc = None
 
     def _select(self, name: str) -> None:
         r = httpx.put(self._controller(f"/proxies/{SELECTOR_GROUP}"),
+                      headers={"Authorization": f"Bearer {self.controller_secret}"},
                       json={"name": name}, timeout=10, trust_env=False)
         r.raise_for_status()
 
@@ -305,6 +311,7 @@ class MihomoChecker:
             for _ in range(DELAY_ROUNDS):
                 r = httpx.get(
                     self._controller(f"/group/{SELECTOR_GROUP}/delay"),
+                    headers={"Authorization": f"Bearer {self.controller_secret}"},
                     params={"url": url, "timeout": DELAY_TIMEOUT_MS},
                     timeout=DELAY_TIMEOUT_MS / 1000 + 20, trust_env=False)
                 r.raise_for_status()
@@ -333,6 +340,8 @@ class MihomoChecker:
         exp_ip = expected_ip(proxy)
         last_err = ""
         for attempt in range(attempts):
+            if STOPPING.is_set():
+                break
             try:
                 self._select(str(proxy["name"]))
                 data = self._info_once(timeout)
@@ -350,7 +359,7 @@ class MihomoChecker:
             except Exception as e:  # noqa: BLE001 - retry any failure
                 last_err = str(e)[:200]
                 if attempt < attempts - 1:
-                    time.sleep(RETRY_SLEEP)
+                    STOPPING.wait(RETRY_SLEEP)
         return {"measured": False, "score": None, "exit_ip": None,
                 "country": "", "expected_ip": exp_ip, "match": False,
                 "ippure_url": ippure_url(exp_ip), "error": last_err,
@@ -368,6 +377,8 @@ class MihomoChecker:
         try:
             alive = checker.screen_alive(shard)
             for p in shard:
+                if STOPPING.is_set():
+                    break
                 if alive is None or str(p["name"]) in alive:
                     rec = checker.check_one(p)
                     if alive is not None:
@@ -388,7 +399,7 @@ class MihomoChecker:
                                 "mid-shard, %d nodes left unmeasured",
                                 worker_id, checker.proc.returncode,
                                 len(shard) - len(results))
-                    checker.proc = None
+                    checker.stop()
                     break
                 results[dedup_key(p)] = rec
         finally:
@@ -402,6 +413,8 @@ class MihomoChecker:
         node would 'fail' — that must not count against the nodes."""
         last = ""
         for attempt in range(2):
+            if STOPPING.is_set():
+                return "application is shutting down"
             try:
                 with httpx.Client(timeout=15, trust_env=False) as client:
                     r = client.get(self.info_url,
@@ -413,7 +426,7 @@ class MihomoChecker:
             except Exception as e:  # noqa: BLE001 - reported to the caller
                 last = f"{type(e).__name__}: {e}"[:200]
                 if attempt == 0:
-                    time.sleep(RETRY_SLEEP)
+                    STOPPING.wait(RETRY_SLEEP)
         return last
 
     def check_all(self, proxies: list[dict]) -> dict:

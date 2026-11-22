@@ -8,8 +8,8 @@ logged-in admin — the user asked for this on 2026-11-12; the page
 is login-protected, so only the admin sees them. The webhook value
 is still never echoed: see ``Config.public_view``.
 
-Static output (jay_filtered.yaml) is NOT served by this app — nginx
-serves it as a static file. This app only serves /admin and /api/*.
+Linux output is served by nginx. The Windows launcher enables a
+loopback-only subscription endpoint and local session authentication.
 """
 from __future__ import annotations
 
@@ -24,15 +24,17 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from app.config import Config
 from app.pipeline import ServiceState, load_state, reschedule, run_pipeline, scheduler_loop
+from app import runtime
 
 log = logging.getLogger(__name__)
-security = HTTPBasic()
+security = HTTPBasic(auto_error=False)
+DESKTOP_EXIT = None
 
 ADMIN_USER = os.environ.get("ADMIN_USER", "jayzqj")
 _admin_password = os.environ.get("ADMIN_PASSWORD", "")
@@ -44,10 +46,17 @@ if not _admin_password and os.environ.get("ADMIN_PASSWORD_FILE"):
         log.warning("ADMIN_PASSWORD_FILE unreadable: %s", e)
 
 
-def _check_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+def _check_auth(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
+    if runtime.desktop_mode():
+        token = os.environ.get("CLASH_MERGE_DESKTOP_TOKEN", "")
+        if token and secrets.compare_digest(request.cookies.get("clash_merge_session", ""), token):
+            return "desktop"
+        raise HTTPException(status_code=401, detail="请从系统托盘重新打开配置页面")
     if not _admin_password:
         raise HTTPException(status_code=503,
                             detail="admin password not configured on server")
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Basic"})
     user_ok = secrets.compare_digest(credentials.username, ADMIN_USER)
     pw_ok = secrets.compare_digest(credentials.password, _admin_password)
     if not (user_ok and pw_ok):
@@ -99,7 +108,10 @@ async def lifespan(app: FastAPI):
     task = _spawn(scheduler_loop(CFG, STATE))
     log.info("clash-merge service started; next run %s", STATE.next_run)
     yield
-    task.cancel()
+    pending = list(_TASKS)
+    for pending_task in pending:
+        pending_task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
 
 
 app = FastAPI(title="clash-merge-service", lifespan=lifespan)
@@ -112,6 +124,12 @@ async def csrf_guard(request: Request, call_next):
     POST to /api/*. Mutating API calls must carry the
     ``X-Requested-With`` header, which a cross-site page cannot set
     without a CORS preflight (and this app allows no CORS)."""
+    if runtime.desktop_mode():
+        if request.url.hostname not in ("127.0.0.1", "localhost"):
+            return JSONResponse(status_code=403, content={"detail": "local access only"})
+        origin = request.headers.get("origin")
+        if origin and origin != runtime.desktop_url():
+            return JSONResponse(status_code=403, content={"detail": "untrusted origin"})
     if (request.method in _MUTATING and request.url.path.startswith("/api/")
             and request.headers.get("x-requested-with") != "XMLHttpRequest"):
         return JSONResponse(status_code=403,
@@ -146,7 +164,60 @@ async def api_status(_user: str = Depends(_check_auth)):
 
 @app.get("/api/config")
 async def api_get_config(_user: str = Depends(_check_auth)):
-    return _cfg().public_view()
+    view = _cfg().public_view()
+    view["subscription_url"] = runtime.subscription_url()
+    view["desktop"] = {"enabled": runtime.desktop_mode()}
+    if runtime.desktop_mode():
+        view["desktop"].update(autorun=runtime.autorun_enabled(),
+                               data_dir=str(runtime.desktop_data_dir()),
+                               core_available=Path(_cfg().data["mihomo_bin"]).is_file())
+    return view
+
+
+@app.get("/desktop/open")
+async def desktop_open(token: str):
+    expected = os.environ.get("CLASH_MERGE_DESKTOP_TOKEN", "")
+    if not runtime.desktop_mode() or not expected or not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=403, detail="invalid desktop session")
+    response = RedirectResponse("/admin", status_code=303)
+    response.set_cookie("clash_merge_session", expected, httponly=True, samesite="strict")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@app.get("/subscription/{token}/jay_filtered.yaml")
+async def desktop_subscription(token: str):
+    expected = os.environ.get("CLASH_MERGE_SUB_TOKEN", "")
+    if not runtime.desktop_mode() or not expected or not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=404, detail="not found")
+    output = Path(_cfg().output_path)
+    if not output.is_file():
+        raise HTTPException(status_code=404, detail="尚未生成订阅，请添加订阅源并完成一轮检测")
+    return FileResponse(output, media_type="application/yaml", headers={"Cache-Control": "no-store"})
+
+
+class AutorunIn(BaseModel):
+    enabled: bool = Field(strict=True)
+
+
+@app.put("/api/desktop/autorun")
+async def desktop_autorun(body: AutorunIn, _user: str = Depends(_check_auth)):
+    if not runtime.desktop_mode():
+        raise HTTPException(status_code=404, detail="desktop only")
+    try:
+        runtime.set_autorun(body.enabled)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="无法修改当前用户开机启动设置") from exc
+    return {"ok": True, "enabled": runtime.autorun_enabled()}
+
+
+@app.post("/api/desktop/exit")
+async def desktop_exit(_user: str = Depends(_check_auth)):
+    if not runtime.desktop_mode() or DESKTOP_EXIT is None:
+        raise HTTPException(status_code=404, detail="desktop only")
+    asyncio.get_running_loop().call_later(0.5, DESKTOP_EXIT)
+    return {"ok": True}
 
 
 class SettingsIn(BaseModel):
@@ -167,6 +238,8 @@ class SettingsIn(BaseModel):
     check_front_enabled: bool | None = None
     use_remote_subconverter: bool | None = None
     merged_public_url: str | None = None
+    fetch_proxy_url: str | None = None
+    check_front: dict | None = None
 
 
 class SubscriptionIn(BaseModel):
@@ -233,6 +306,10 @@ async def api_put_config(body: SettingsIn, request: Request,
         data["use_remote_subconverter"] = body.use_remote_subconverter
     if body.merged_public_url is not None:
         data["merged_public_url"] = body.merged_public_url.strip()
+    if body.fetch_proxy_url is not None:
+        data["fetch_proxy_url"] = body.fetch_proxy_url.strip()
+    if "check_front" in body.model_fields_set:
+        data["check_front"] = body.check_front
     trial = Config(data=data, path=cfg.path)
     errors = trial.validate()
     if errors:
@@ -348,7 +425,7 @@ async def api_ini(refresh: bool = False, _user: str = Depends(_check_auth)):
         ini_text = _ini_cache[2]
     else:
         try:
-            async with make_client(timeout=30) as client:
+            async with make_client(timeout=30, cfg=_cfg()) as client:
                 ini_text = await fetch_text(url, client)
         except Exception as e:  # noqa: BLE001 - surfaced to the admin page
             return {"ok": False, "error": str(e)[:300]}

@@ -72,6 +72,8 @@ from app.notify import failure_text, send_wechat, success_text
 from app.purity import MihomoChecker
 from app.purity_history import apply_history, filter_by_purity
 from app.schedule import in_execution_window, next_execution, normalize_next_run
+from app.processes import run_process, STOPPING
+from app.runtime import subscription_url
 
 log = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
@@ -202,9 +204,10 @@ async def _write_output(cfg: Config, doc: dict) -> None:
     workdir = cfg.data.get("mihomo_workdir") or "/opt/clash-merge-service/mihomo"
 
     def _validate() -> subprocess.CompletedProcess:
-        return subprocess.run(
+        # Limit Go heap growth inside the Linux 512 MiB service cgroup as well.
+        return run_process(
             [mihomo_bin, "-t", "-f", str(tmp), "-d", workdir],
-            capture_output=True, text=True, timeout=120)
+            timeout=120, env={**os.environ, "GOMEMLIMIT": "128MiB", "GOGC": "50"})
 
     try:
         tmp.write_text(yaml.safe_dump(doc, allow_unicode=True,
@@ -213,14 +216,24 @@ async def _write_output(cfg: Config, doc: dict) -> None:
         try:
             res = await asyncio.to_thread(_validate)
         except FileNotFoundError:
+            from app.runtime import desktop_mode
+            if desktop_mode():
+                raise FetchError("validate", "检测内核缺失，请重新完整解压 Windows 发布包")
             log.warning("pipeline: mihomo binary %r not found, "
                         "skipping -t validation", mihomo_bin)
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or exc.stderr or "no validator output"
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            raise FetchError("validate", f"mihomo configuration validation timed out after 120s; {output[-500:]}") from exc
         else:
             if res.returncode != 0:
                 tail = ((res.stderr or "") + (res.stdout or ""))[-500:]
                 raise FetchError("validate",
                                  f"mihomo -t failed: {tail.strip()}")
             log.info("pipeline: mihomo -t passed for new output")
+        if STOPPING.is_set():
+            raise FetchError("write", "application is shutting down; output preserved")
         try:
             os.replace(tmp, out_path)
         except OSError:
@@ -271,7 +284,7 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
         report["proxies_in"] = len(proxies)
 
         step = "fetch-ini"
-        async with make_client(timeout=60) as client:
+        async with make_client(timeout=60, cfg=cfg) as client:
             ini_text = await fetch_text(cfg.ini_url, client)
             step = "convert"
             doc, cstats = await converter_mod.convert(proxies, ini_text,
@@ -345,7 +358,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
         report["sources_total"] = len(subs)
         if not subs:
             raise FetchError("fetch", "no enabled subscriptions in config")
-        async with make_client(timeout=60) as client:
+        async with make_client(timeout=60, cfg=cfg) as client:
             # Sources are fetched concurrently (one slow airport no
             # longer serializes the rest); results keep config order.
             results = await asyncio.gather(
@@ -540,6 +553,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
         report["execution_start"] = live_cfg.data.get("execution_start", "08:00")
         report["execution_end"] = live_cfg.data.get("execution_end", "23:59")
         report["next_run"] = state.next_run
+        report["subscription_url"] = subscription_url()
         persist_state(cfg, state)
         # A manual run moved next_run: let the scheduler re-read it.
         _wake_event().set()

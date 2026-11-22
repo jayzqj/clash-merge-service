@@ -20,6 +20,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from app.runtime import defaults_for_platform, desktop_mode, desktop_data_dir
 
 # Upper bounds enforced by validate(). 8 mihomo instances already
 # saturate a 2 GB VPS under MemoryMax=512M; a day is the longest
@@ -55,9 +56,8 @@ DEFAULTS: dict = {
     # Default is to check backend nodes DIRECT from the VPS (the
     # Bright Data gateway accepts the VPS IP — verified 2026-11-14,
     # 170/171 measured). The front is used only when check_front is
-    # set AND check_front_enabled is true. Config-file only, never
-    # edited on /admin (it carries the node's password) and never
-    # echoed by the API; the switch itself can be toggled on /admin.
+    # set AND check_front_enabled is true. Admin can replace it,
+    # but credentials are never echoed by the API.
     "check_front": None,
     "check_front_enabled": False,
     "mihomo_bin": "mihomo",
@@ -65,6 +65,7 @@ DEFAULTS: dict = {
     "mihomo_mixed_port": 7890,
     "mihomo_controller_port": 9090,
     "min_interval_seconds": 300,
+    "fetch_proxy_url": "",
 }
 
 # The dialer-proxy target group name — FALLBACK only. The ini
@@ -83,6 +84,8 @@ def default_config_path() -> Path:
     env = os.environ.get("CLASH_MERGE_CONFIG")
     if env:
         return Path(env)
+    if desktop_mode():
+        return desktop_data_dir() / "config.json"
     return Path(__file__).resolve().parent.parent / "config.json"
 
 
@@ -104,7 +107,7 @@ def mask_check_front(front) -> dict:
 
 @dataclass
 class Config:
-    data: dict = field(default_factory=lambda: copy.deepcopy(DEFAULTS))
+    data: dict = field(default_factory=lambda: defaults_for_platform(DEFAULTS))
     path: Path = field(default_factory=default_config_path)
 
     @classmethod
@@ -112,10 +115,10 @@ class Config:
         p = Path(path) if path else default_config_path()
         if p.exists():
             raw = json.loads(p.read_text(encoding="utf-8"))
-            merged = copy.deepcopy(DEFAULTS)
+            merged = defaults_for_platform(DEFAULTS)
             merged.update(raw)
             return cls(data=merged, path=p)
-        return cls(data=copy.deepcopy(DEFAULTS), path=p)
+        return cls(data=defaults_for_platform(DEFAULTS), path=p)
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,6 +239,9 @@ class Config:
             errors.append("ini_url must be an https URL")
         if not self.output_path:
             errors.append("output_path is empty")
+        proxy = self.data.get("fetch_proxy_url", "")
+        if proxy and not re.fullmatch(r"https?://\S+", proxy):
+            errors.append("订阅拉取代理须为 http:// 或 https:// 地址，留空表示直连")
         return errors
 
     def public_view(self) -> dict:

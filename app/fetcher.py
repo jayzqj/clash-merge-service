@@ -34,8 +34,11 @@ import os
 import ssl
 
 
-def make_client(timeout: float = 60.0) -> httpx.AsyncClient:
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
+def make_client(timeout: float = 60.0, cfg=None) -> httpx.AsyncClient:
+    from app.runtime import desktop_mode
+    proxy = (cfg.data.get("fetch_proxy_url") if cfg else None) or None
+    if proxy is None and not desktop_mode():
+        proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
     return httpx.AsyncClient(timeout=timeout, proxy=proxy, trust_env=False,
                              verify=ssl.create_default_context())
 

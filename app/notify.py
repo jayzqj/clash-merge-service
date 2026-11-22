@@ -73,7 +73,7 @@ def success_text(report: dict) -> str:
         f"纯净度：已测 {report.get('purity_measured', 0)} 个，未测 {report.get('purity_unmeasured', 0)} 个\n"
         f"后置节点：{report.get('backend_total', 0)} 个\n"
         f"{_execution_text(report)}"
-        "最终地址：https://xiuyuan.9527653.xyz/jay_filtered.yaml"
+        f"最终地址：{report.get('subscription_url', 'https://xiuyuan.9527653.xyz/jay_filtered.yaml')}"
     )
 
 

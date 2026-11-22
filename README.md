@@ -1,5 +1,8 @@
 # clash-merge-service
 
+支持 Linux 服务端与 Windows 11 本机版，共用核心逻辑，分别保存配置和检测结果。
+Windows EXE 使用、开机启动及打包见 [WINDOWS.md](WINDOWS.md)；Linux 部署继续使用 [deploy/DEPLOY.md](deploy/DEPLOY.md)。
+
 把多个 Clash 订阅合并成一份订阅：逐节点测纯净度，失败时沿用上次成功分数，可选按阈值过滤，
 套用自定义规则 ini 生成最终 YAML，托管在 VPS 上，以固定地址
 `https://xiuyuan.9527653.xyz/jay_filtered.yaml` 供 Clash Verge 直接订阅。
@@ -63,7 +66,7 @@ deploy/
 | `purity_threshold` | 后台「纯净度 预留%」，默认 15；输入 0–100 的数字（支持小数），15 表示保留 ≤15%，包含 15%。保存后下轮完整检测生效；过滤关闭时保留阈值但不使用 |
 | `purity_workers` | 并行检测 worker 数（1–8，默认 1 = 串行）；每个 worker 独占一个 mihomo 实例（端口 base+i、工作目录 `mihomo/worker-i`），节点轮询分片。4 worker 时 409 节点一轮约 10–20 分钟（串行约 60 分钟）。2GB VPS 建议 ≤4，每个实例多占约 30–50MB。管理页可调 |
 | `purity_delay_screen` / `purity_delay_url` | 延迟筛选（默认开）：每个 worker 逐个检测前，先对自己那批节点做一次并发延迟测试（mihomo 的 group delay，目标 `purity_delay_url`，超时 10 秒，做 2 轮，任一轮通过即算通过）。通过的节点照常检测（3 次 × 30 秒）；两轮都不通过的节点只做 1 次 15 秒的检测，测到照常记分，测不到才记失败。延迟测试不通过不直接判失败——实测 2026-11-14，5 秒超时下 22 个不通过的节点里有 13 个其实能测到。筛选本身出错或通过率低于 20% 时本批忽略筛选。报告里 `purity_delay_screen_failed` / `purity_delay_screen_rescued` 是不通过的节点数和其中仍测到的节点数。管理页可开关 |
-| `check_front` / `check_front_enabled` | **可选**的静态节点检测前置。默认（`check_front_enabled: false`）静态节点从 VPS **直连**检测，不走任何前置——实测 2026-11-14 Bright Data 网关接受 VPS 出口 IP，直连 171 个静态节点测到 170 个。`check_front` 是一个完整的节点定义（订阅里一个 `proxies` 项的形状），只写配置文件，接口只回显名字/类型/服务器，密码永不回显；只有它已配置**且** `check_front_enabled` 为 true 时，静态 TCP 节点检测才走它（开关可在管理页切换）。不再从订阅里自动挑机场前置（实测 2026-11-12 机场前置走静态节点全部被网关掐断）。只影响检测；输出文件里静态节点仍按 ini 的前置分组注入 `dialer-proxy` |
+| `check_front` / `check_front_enabled` | **可选**的静态节点检测前置。默认（`check_front_enabled: false`）静态节点从 VPS **直连**检测，不走任何前置——实测 2026-11-14 Bright Data 网关接受 VPS 出口 IP，直连 171 个静态节点测到 170 个。`check_front` 是一个完整的节点定义（订阅里一个 `proxies` 项的形状），可在后台输入 JSON 替换，留空保持、勾选清除后保存可移除；接口只回显名字/类型/服务器，密码永不回显；只有它已配置**且** `check_front_enabled` 为 true 时，静态 TCP 节点检测才走它（开关可在管理页切换）。不再从订阅里自动挑机场前置（实测 2026-11-12 机场前置走静态节点全部被网关掐断）。只影响检测；输出文件里静态节点仍按 ini 的前置分组注入 `dialer-proxy` |
 | `mihomo_bin` / `mihomo_workdir` / `mihomo_mixed_port` / `mihomo_controller_port` | 检测用 mihomo 的位置与端口（默认 7890 / 9090，避开 sing-box 已占端口，部署时先核对） |
 
 管理员账号密码**不在** `config.json` 里，来自环境变量：
@@ -213,9 +216,7 @@ ADMIN_USER=jayzqj ADMIN_PASSWORD=<本地测试密码> \
 # 浏览器打开 http://127.0.0.1:18080/admin （会弹 Basic Auth）
 ```
 
-注意：本开发机 UDP 出站被封，hysteria2 / tuic 在这里测不了、跑不起来，
-纯净度检测会把这些节点标为未测（仍保留）。VPS 上 UDP 是通的，
-部署后以 VPS 实测为准；不要把开发机的限制带到 VPS 方案里。
+不同运行设备的 UDP、路由和运营商限制可能不同；Windows 本机结果以本机网络为准，Linux VPS 结果以服务器网络为准。
 本机也没有 mihomo 二进制时，检测步骤会自动跳过（全部未测），合并流程照常走完。
 
 ## 验收清单（来自需求文档）

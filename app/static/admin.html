@@ -149,7 +149,7 @@ td.empty{padding:14px 10px}
 .btn.sm{padding:4px 10px;font-size:12px}
 .btn[aria-disabled=true]{opacity:.55;cursor:progress}
 .actions-row{display:flex;flex-wrap:wrap;gap:8px}
-input[type=text],input[type=number],input[type=time],select{width:100%;font:13px var(--mono);color:var(--ink);background:var(--field);
+input[type=text],input[type=number],input[type=time],select,textarea{width:100%;font:13px var(--mono);color:var(--ink);background:var(--field);
   border:1px solid var(--edge);border-radius:7px;padding:8px 10px;min-width:0}
 select{font-family:var(--sans)}
 input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:focus{outline:none;border-color:var(--accent);
@@ -241,8 +241,8 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
     <div><h1>Clash 合并订阅 · 管理</h1><div class="brand-sub">MERGE CONTROL CONSOLE</div></div>
   </div>
   <div class="addr">
-    <div class="addr-label"><span>最终地址</span><small>由 nginx 静态提供，不经过本服务</small></div>
-    <code id="finalUrl">https://xiuyuan.9527653.xyz/jay_filtered.yaml</code>
+    <div class="addr-label"><span>最终地址</span><small id="finalUrlHint">正在读取配置</small></div>
+    <code id="finalUrl">加载中…</code>
     <button type="button" class="btn sm" id="btnCopy">复制</button>
   </div>
   <div class="top-right">
@@ -263,6 +263,18 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
 </section>
 
 <main class="grid">
+
+<section class="panel span-12" id="desktopPanel" hidden style="grid-column:1/-1">
+  <div class="ph"><span class="tag">WINDOWS</span><h2>本机运行</h2></div>
+  <div class="pb">
+    <div id="desktopInfo" class="readout"></div>
+    <label class="opt"><input type="checkbox" id="autorun"><span class="opt-body"><span class="opt-title">开机启动（当前用户登录后）</span><span class="opt-desc">启动到系统托盘，不自动打开浏览器；双击托盘图标可打开配置页面。</span></span></label>
+    <button type="button" class="btn" id="btnAutorun">保存开机启动设置</button>
+    <div id="desktopMsg" class="msg" aria-live="polite"></div>
+    <p class="hint">检测从本机网络发起。若 Clash Verge 开启 TUN，流量仍可能被接管；请在客户端为 clash-merge-mihomo.exe 配置直连规则，或检测时关闭 TUN。配置检测前置后，静态 TCP 节点会通过该前置检测。</p>
+    <p class="hint">关闭浏览器后任务继续运行；从托盘选择“退出”才停止程序。电脑关机或睡眠时不检测，唤醒后仅在允许时段执行。此处订阅地址仅供本机客户端使用。</p>
+  </div>
+</section>
 
 <section class="panel span-4" id="status">
   <div class="ph"><span class="tag">01 STATUS</span><h2>运行状态</h2></div>
@@ -321,7 +333,8 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
         <small>留空 = 保持现有值；页面和接口从不回显真实地址</small></div>
       <div class="f wide"><label for="ini">自定义规则 ini 地址</label><input type="text" id="ini" spellcheck="false"></div>
       <div class="f"><label for="subconv">转换服务地址</label><input type="text" id="subconv" spellcheck="false"></div>
-      <div class="f"><label for="output">输出文件路径（VPS 上）</label><input type="text" id="output" spellcheck="false"></div>
+      <div class="f"><label for="output">输出文件路径（运行本服务的设备上）</label><input type="text" id="output" spellcheck="false"></div>
+      <div class="f wide"><label for="fetchProxy">订阅与规则下载代理（可选）</label><input type="text" id="fetchProxy" placeholder="例如 http://127.0.0.1:7897" autocomplete="off" spellcheck="false"><small>Windows 留空直连；仅影响订阅与规则下载，不作为节点检测前置。Linux 留空沿用服务环境代理。</small></div>
     </div>
 
     <h3>纯净度检测</h3>
@@ -341,10 +354,12 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
       <div class="f"><label for="workers">纯净度检测并行数（1–8）</label><input type="number" id="workers" min="1" max="8">
         <small>每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4</small></div>
       <div class="f"><span class="lab">静态节点检测前置</span><div class="readout" id="checkFront">—</div>
-        <small>节点本身只能在配置文件里改，页面只显示</small></div>
+        <small>可在下方填写或替换前置；连接密码不回显</small></div>
     </div>
     <label class="opt"><input type="checkbox" role="switch" id="frontEnabled"><span class="opt-body"><span class="opt-title">静态节点检测走前置</span>
-      <span class="opt-desc">默认关：静态节点从 VPS 直连检测</span></span></label>
+      <span class="opt-desc">默认关：静态节点从运行本服务的设备直连检测</span></span></label>
+    <div class="f"><label for="frontJson">检测前置节点 JSON（留空保持不变）</label><textarea id="frontJson" rows="4" autocomplete="off" spellcheck="false" placeholder='{"name":"检测前置","type":"socks5","server":"127.0.0.1","port":7897}'></textarea><small>填写一个完整 Clash 节点对象；检测链路应与你实际使用的前置一致。</small></div>
+    <label class="opt"><input type="checkbox" id="clearFront"><span>保存时清除已配置的检测前置，并关闭前置开关</span></label>
 
     <h3>远程转换</h3>
     <div class="fields">
@@ -501,6 +516,9 @@ function updatePurityFilter(){
   $('purityFilter').setAttribute('aria-expanded', String(enabled));
 }
 function fillForm(c){
+  $('fetchProxy').value = c.fetch_proxy_url||'';
+  $('frontJson').value = '';
+  $('clearFront').checked = false;
   $('webhook').value = '';
   $('interval').value = c.interval_seconds;
   $('executionStart').value = c.execution_start ?? '08:00';
@@ -636,11 +654,19 @@ function renderFailed(lr){
 }
 
 function renderConfig(c){
+  $('finalUrl').textContent = c.subscription_url||'';
+  const desktop = c.desktop||{};
+  $('desktopPanel').hidden = !desktop.enabled;
+  $('finalUrlHint').textContent = desktop.enabled ? '本机订阅 · 首轮成功后可用' : '由 nginx 静态提供，不经过本服务';
+  if(desktop.enabled){
+    $('desktopInfo').textContent = '数据目录：'+desktop.data_dir+' · 检测内核：'+(desktop.core_available?'就绪':'缺失');
+    if(changed('autorun', desktop.autorun)) $('autorun').checked = !!desktop.autorun;
+  }
   $('webhookState').textContent = c.wechat_webhook ? '当前：已设置' : '当前：未设置';
   const cf = c.check_front||{};
   $('checkFront').textContent = cf.configured ?
     ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+(cf.server||'')+':'+(cf.port||'')+'）'+(c.check_front_enabled?'，已启用':'，未启用（直连检测）')) :
-    '未配置：静态节点从 VPS 直连检测';
+    '未配置：静态节点从本服务所在设备直连检测';
   const subs = c.subscriptions||[];
   if(editingSubId && !subs.some(sub => sub.id === editingSubId)){
     closeNameEditor();
@@ -831,6 +857,14 @@ async function saveSettings(runNow = true){
     use_remote_subconverter: $('remote').checked,
     merged_public_url: $('mergedUrl').value.trim()};
   if($('purityFilter').checked) body.purity_threshold = $('purityThreshold').valueAsNumber;
+  body.fetch_proxy_url = $('fetchProxy').value.trim();
+  if($('clearFront').checked){ body.check_front = null; body.check_front_enabled = false; }
+  else if($('frontJson').value.trim()){
+    try{
+      body.check_front = JSON.parse($('frontJson').value);
+      if(!body.check_front || Array.isArray(body.check_front) || typeof body.check_front !== 'object') throw new Error();
+    }catch(e){ say($('setMsg'), '检测前置必须是合法的 JSON 节点对象。', 'bad'); return; }
+  }
   const w = $('webhook').value.trim();
   if(w) body.wechat_webhook = w;
   savingSettings = true;
@@ -891,6 +925,13 @@ guard($('btnReload'), reloadForm);
 guard($('btnIni'), () => loadIni(true));
 guard($('btnClearAvail'), clearAvail);
 guard($('btnCopy'), copyUrl);
+guard($('btnAutorun'), async () => {
+  try{
+    const r = await api('/api/desktop/autorun', jsonOpts('PUT', {enabled:$('autorun').checked}));
+    $('autorun').checked = r.enabled;
+    say($('desktopMsg'), r.enabled ? '已启用当前用户登录后自动启动。' : '已关闭开机启动。', 'ok');
+  }catch(e){ say($('desktopMsg'), '设置失败：'+e.message, 'bad'); }
+});
 tick(); setInterval(() => tick(), 30000);
 </script>
 </body>
