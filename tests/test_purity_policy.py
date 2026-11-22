@@ -23,8 +23,8 @@ def node(index=0, **extra):
             "port": 443, "cipher": "aes-128-gcm", "password": "test-secret", **extra}
 
 
-def result(p, score=None, attempts=3):
-    return {dedup_key(p): {"measured": score is not None, "score": score,
+def result(p, score=None, attempts=3, connected=True):
+    return {dedup_key(p): {"connected": connected, "measured": score is not None, "score": score,
                           "attempts": attempts, "country": "JP"}}
 
 
@@ -48,14 +48,14 @@ class HistoryTests(ConfigFixture, unittest.TestCase):
         cfg = Config.load(self.cfg.path)
         renamed = dict(p, name="日本 renamed")
         for failures in (1, 2, 3):
-            current = result(renamed)
+            current = result(renamed, connected=False)
             history = apply_history(cfg, [renamed], current)
             rec = history[dedup_key(p)]
             self.assertEqual(rec["score"], 5)
             self.assertFalse(rec["measured"])
             self.assertIsNone(current[dedup_key(p)]["score"])
             kept, _ = update_availability(cfg, load_availability(cfg), [renamed], history)
-            self.assertEqual(len(kept), int(failures < 3))
+            self.assertEqual(len(kept), 0)
             self.assertEqual(load_availability(cfg)[dedup_key(p)]["fails"], failures)
         apply_history(cfg, [p], result(p, 40))
         rec = apply_history(cfg, [p], result(p))[dedup_key(p)]
@@ -207,13 +207,13 @@ class PipelineTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         for group in doc["proxy-groups"]:
             self.assertTrue(set(group["proxies"]) <= names)
 
-    async def test_failed_checks_use_history_until_availability_omits_them(self):
+    async def test_connectivity_failure_is_excluded_immediately_despite_history(self):
         p = node()
         await self.run_round([p], result(p, 5))
         self.cfg.data["purity_filter_enabled"] = True
         for failures in (1, 2, 3):
-            report, doc = await self.run_round([p], result(p))
-            self.assertEqual(len(doc["proxies"]), int(failures < 3))
+            report, doc = await self.run_round([p], result(p, connected=False))
+            self.assertEqual(len(doc["proxies"]), 0)
         self.assertEqual(report["availability_omitted"], 1)
 
     async def test_missing_or_high_history_is_excluded_and_current_score_wins(self):

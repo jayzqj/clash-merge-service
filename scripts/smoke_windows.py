@@ -22,6 +22,11 @@ class Fixture(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def do_HEAD(self):
+        time.sleep(0.005)
+        self.send_response(204)
+        self.end_headers()
+
     def do_CONNECT(self):
         # Mihomo uses CONNECT for HTTP proxy nodes, even for an HTTP target.
         # The fixture destination is this same server; consume its tunneled GET.
@@ -72,7 +77,7 @@ def main(keep_running=False):
     fixture = f"http://127.0.0.1:{server.server_port}"
     mixed, controller = free_port(), free_port()
     cfg = {"subscriptions": [{"id": "fixture", "url": fixture + "/subscription", "enabled": True}],
-           "ini_url": fixture + "/rules", "purity_info_url": fixture + "/info",
+           "ini_url": fixture + "/rules", "purity_info_url": fixture + "/info", "connectivity_url": fixture + "/ping",
            "notify_enabled": False, "execution_start": "00:00", "execution_end": "23:59",
            "purity_workers": 1, "purity_delay_screen": False, "interval_seconds": 86400,
            "mihomo_mixed_port": mixed, "mihomo_controller_port": controller}

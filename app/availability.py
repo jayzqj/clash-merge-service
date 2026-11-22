@@ -1,24 +1,4 @@
-"""Per-node availability history.
-
-A node is "unavailable" in a round when it was actually tested and
-the purity check failed after its retries (``measured`` is False and
-``attempts`` > 0). Nodes that were never attempted (purity disabled,
-mihomo unavailable, or a worker that failed to start) do NOT count:
-a dead checker must not nuke the whole subscription.
-
-Consecutive failures are counted per node, keyed by the same
-``dedup_key`` used for merging (whole proxy dict minus name), so a
-rename does not reset the count. When a node reaches
-``FAIL_THRESHOLD`` (3) consecutive failures it is omitted from the
-final output — but it is still fetched and still tested every round,
-so the moment a later test measures it again the counter resets to 0
-and the node comes back.
-
-Records live in ``availability.json`` next to ``config.json`` /
-``state.json`` (never committed; it holds node names and failure
-counts only, no credentials). Records not seen for ``PRUNE_DAYS``
-are dropped on save so the file does not grow forever.
-"""
+"""Connectivity failure history for display; output requires a pass in this round."""
 from __future__ import annotations
 
 import json
@@ -32,14 +12,8 @@ from app.merge import dedup_key
 log = logging.getLogger(__name__)
 
 CST = timezone(timedelta(hours=8))
-FAIL_THRESHOLD = 3
+FAIL_THRESHOLD = 1
 PRUNE_DAYS = 30
-# If more than this share of the attempted nodes failed in one round,
-# the round is treated as a checker/network problem (VPS egress down,
-# info URL down, mihomo misbehaving) rather than ~all nodes dying at
-# once: failure counters are NOT incremented for that round.
-ANOMALY_FAIL_RATIO = 0.6
-ANOMALY_MIN_ATTEMPTED = 10
 
 
 def _now_cst() -> str:
@@ -108,47 +82,19 @@ def omitted_nodes(records: dict) -> list[dict]:
     return sorted(out, key=lambda x: (-x["fails"], x["name"]))
 
 
-def update_availability(cfg, records: dict, proxies: list[dict],
-                        purity: dict) -> tuple[list[dict], dict]:
-    """Update consecutive-failure counters from one purity round and
-    drop nodes that reached the threshold.
-
-    ``proxies`` is the list that was actually tested (after
-    pre-filter); ``purity`` is the {dedup_key: record} result.
-    Returns (kept_proxies, stats) and persists the updated records.
-    Nodes that were not attempted (``attempts`` == 0) leave their
-    counter untouched.
-    """
+def update_availability(cfg, records: dict, proxies: list[dict], purity: dict) -> tuple[list[dict], dict]:
+    """Track connectivity only. Every current failure is omitted immediately."""
     now = _now_cst()
-    attempted = [r for r in (purity.get(dedup_key(p)) for p in proxies)
-                 if r is not None and r.get("attempts", 0) > 0]
-    failed = sum(1 for r in attempted if not r.get("measured"))
-    anomaly = (len(attempted) >= ANOMALY_MIN_ATTEMPTED
-               and failed / len(attempted) > ANOMALY_FAIL_RATIO)
-    if anomaly:
-        log.warning("availability: %d/%d attempted nodes failed this round "
-                    "(> %.0f%%) — treating it as a checker problem, failure "
-                    "counters not incremented", failed, len(attempted),
-                    ANOMALY_FAIL_RATIO * 100)
     for p in proxies:
         key = dedup_key(p)
-        rec = purity.get(key)
-        if rec is None:
-            continue
-        name = str(p.get("name", ""))
-        if rec.get("measured"):
-            if key in records:
-                records[key] = {"fails": 0, "name": name, "last_seen": now}
-        elif rec.get("attempts", 0) > 0 and not anomaly:
-            prev = records.get(key, {"fails": 0, "name": name,
-                                     "last_seen": now})
-            records[key] = {"fails": prev.get("fails", 0) + 1,
-                            "name": name, "last_seen": now}
-        # attempts == 0 or anomalous round: counter untouched.
+        rec = purity.get(key, {})
+        if rec.get("connected") is True:
+            records.pop(key, None)
+        else:
+            previous = records.get(key, {})
+            records[key] = {"fails": previous.get("fails", 0) + 1,
+                            "name": str(p.get("name", "")), "last_seen": now}
     records = save_availability(cfg, records)
-    kept = [p for p in proxies
-            if records.get(dedup_key(p), {}).get("fails", 0) < FAIL_THRESHOLD]
-    stats = {"availability_tracked": len(records),
-             "availability_omitted": len(proxies) - len(kept),
-             "availability_anomaly_skipped": anomaly}
-    return kept, stats
+    kept = [p for p in proxies if purity.get(dedup_key(p), {}).get("connected") is True]
+    return kept, {"availability_tracked": len(records), "availability_omitted": len(proxies) - len(kept),
+                  "availability_anomaly_skipped": False}

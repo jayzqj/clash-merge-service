@@ -45,19 +45,10 @@ DEFAULTS: dict = {
     "purity_threshold": 15,
     "purity_info_url": "https://my.123169.xyz/v1/info",
     "purity_workers": 1,
-    # Delay screen before the per-node purity loop (see app/purity.py):
-    # nodes failing mihomo's group delay test get one short info
-    # attempt instead of 3 x 30 s. Turn off to check every node the
-    # slow way.
+    # Batch vs sequential connectivity testing; both are mandatory.
     "purity_delay_screen": True,
-    "purity_delay_url": "https://cp.cloudflare.com/generate_204",
-    # OPTIONAL front for backend (静态) purity checks: a full proxy
-    # dict (same shape as one entry of a subscription's "proxies").
-    # Default is to check backend nodes DIRECT from the VPS (the
-    # Bright Data gateway accepts the VPS IP — verified 2026-11-14,
-    # 170/171 measured). The front is used only when check_front is
-    # set AND check_front_enabled is true. Admin can replace it,
-    # but credentials are never echoed by the API.
+    "purity_delay_url": "https://cp.cloudflare.com/generate_204",  # legacy field
+    # Optional extra front candidate. It must pass the same tests as subscription nodes.
     "check_front": None,
     "check_front_enabled": False,
     "mihomo_bin": "mihomo",
@@ -66,6 +57,9 @@ DEFAULTS: dict = {
     "mihomo_controller_port": 9090,
     "min_interval_seconds": 300,
     "fetch_proxy_url": "",
+    "fetch_direct_fallback": True,
+    "connectivity_url": "https://cp.cloudflare.com/generate_204",
+    "connectivity_timeout_ms": 10000,
 }
 
 # The dialer-proxy target group name — FALLBACK only. The ini
@@ -240,6 +234,11 @@ class Config:
         if not self.output_path:
             errors.append("output_path is empty")
         proxy = self.data.get("fetch_proxy_url", "")
+        if not re.fullmatch(r"https?://\S+", str(self.data.get("connectivity_url", ""))):
+            errors.append("连通性测试地址须为 http:// 或 https:// 地址")
+        timeout = self.data.get("connectivity_timeout_ms", 10000)
+        if type(timeout) is not int or not 1000 <= timeout <= 30000:
+            errors.append("连通性超时必须为 1000–30000 毫秒")
         if proxy and not re.fullmatch(r"https?://\S+", proxy):
             errors.append("订阅拉取代理须为 http:// 或 https:// 地址，留空表示直连")
         return errors

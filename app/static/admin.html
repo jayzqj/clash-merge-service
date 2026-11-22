@@ -271,7 +271,7 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
     <label class="opt"><input type="checkbox" id="autorun"><span class="opt-body"><span class="opt-title">开机启动（当前用户登录后）</span><span class="opt-desc">启动到系统托盘，不自动打开浏览器；双击托盘图标可打开配置页面。</span></span></label>
     <button type="button" class="btn" id="btnAutorun">保存开机启动设置</button>
     <div id="desktopMsg" class="msg" aria-live="polite"></div>
-    <p class="hint">检测从本机网络发起。若 Clash Verge 开启 TUN，流量仍可能被接管；请在客户端为 clash-merge-mihomo.exe 配置直连规则，或检测时关闭 TUN。配置检测前置后，静态 TCP 节点会通过该前置检测。</p>
+    <p class="hint">检测从本机网络发起。若 Clash Verge 开启 TUN，流量仍可能被接管；请在客户端为 clash-merge-mihomo.exe 配置直连规则，或检测时关闭 TUN。静态 TCP 节点自动选择已测通的前置，输出固定为本轮验证通过的链路。</p>
     <p class="hint">关闭浏览器后任务继续运行；从托盘选择“退出”才停止程序。电脑关机或睡眠时不检测，唤醒后仅在允许时段执行。此处订阅地址仅供本机客户端使用。</p>
   </div>
 </section>
@@ -337,15 +337,21 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
       <div class="f wide"><label for="fetchProxy">订阅与规则下载代理（可选）</label><input type="text" id="fetchProxy" placeholder="例如 http://127.0.0.1:7897" autocomplete="off" spellcheck="false"><small>Windows 留空直连；仅影响订阅与规则下载，不作为节点检测前置。Linux 留空沿用服务环境代理。</small></div>
     </div>
 
-    <h3>纯净度检测</h3>
+    <label class="opt"><input type="checkbox" id="fetchFallback"><span>下载代理失败时直连重试（订阅与规则）</span></label>
+    <h3>连通性与纯净度</h3>
+    <p class="hint">每轮必须通过连通性测试才返回，失败立即排除。评分接口故障只影响分数；已连通但未测到分数的节点仍按纯净度过滤设置处理。后置 TCP 节点自动挑选本轮可用前置，输出固定为实际测通的链路。</p>
+    <div class="fields">
+      <div class="f"><label for="connectivityUrl">连通性测试 URL</label><input type="text" id="connectivityUrl" spellcheck="false"><small>可与 Clash Verge 的延迟测试地址保持一致</small></div>
+      <div class="f"><label for="connectivityTimeout">每次连通性测试超时（毫秒）</label><input type="number" id="connectivityTimeout" min="1000" max="30000"><small>最多测试两轮，任一轮通过即算连通</small></div>
+    </div>
     <div class="opts">
       <label class="opt"><input type="checkbox" role="switch" id="purity"><span class="opt-body"><span class="opt-title">启用纯净度检测</span>
-        <span class="opt-desc">mihomo 逐节点自查；本轮未测到分数时沿用上次成功分数，连续失败三轮仍隐藏</span></span></label>
+        <span class="opt-desc">本轮未测到分数时沿用历史分数；关闭此项仍检测连通性</span></span></label>
       <label class="opt"><input type="checkbox" role="switch" id="delayScreen"><span class="opt-body"><span class="opt-title">检测前先做延迟筛选</span>
-        <span class="opt-desc">延迟测试不通过的节点只做 1 次 15 秒的检测，不再重试 3 次；关则每个节点都按 3 次 × 30 秒检测</span></span></label>
+        <span class="opt-desc">开启时批量测试连通性，关闭时逐个测试；两种模式都排除本轮未通过的节点</span></span></label>
     </div>
     <label class="opt"><input type="checkbox" role="switch" id="purityFilter" aria-controls="purityThresholdField"><span class="opt-body"><span class="opt-title">纯净度过滤</span>
-      <span class="opt-desc">按本轮分数过滤；检测失败时用上次成功分数比较。仅返回分数不高于预留值的节点，没有任何分数的不返回；连续失败三轮仍隐藏</span></span></label>
+      <span class="opt-desc">先通过本轮连通性，再比较本轮或历史分数。仅返回分数不高于预留值的节点，没有任何分数的不返回</span></span></label>
     <div class="fields" id="purityThresholdField" hidden>
       <div class="f"><label for="purityThreshold">纯净度 预留%</label><input type="number" id="purityThreshold" min="0" max="100" step="any" inputmode="decimal" value="15" aria-describedby="purityThresholdHelp">
         <small id="purityThresholdHelp">只填 0–100 的数字，例如 15 表示保留 ≤15% 的节点，包含 15%；分数越低越好。保存后从下一轮完整检测生效；无符合条件的节点时返回空节点列表。</small></div>
@@ -358,13 +364,14 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
       <div class="f"><span class="lab">静态节点检测前置</span><div class="readout" id="checkFront">—</div>
         <small>可在下方填写或替换前置；连接密码不回显</small></div>
     </div>
-    <label class="opt"><input type="checkbox" role="switch" id="frontEnabled"><span class="opt-body"><span class="opt-title">静态节点检测走前置</span>
-      <span class="opt-desc">默认关：静态节点从运行本服务的设备直连检测</span></span></label>
+    <label class="opt"><input type="checkbox" role="switch" id="frontEnabled"><span class="opt-body"><span class="opt-title">加入自定义前置候选</span>
+      <span class="opt-desc">自动从已测通节点中选择前置；此开关仅决定是否额外测试下面的自定义候选</span></span></label>
     <div class="f"><label for="frontJson">检测前置节点 JSON（留空保持不变）</label><textarea id="frontJson" rows="4" autocomplete="off" spellcheck="false" placeholder='{"name":"检测前置","type":"socks5","server":"127.0.0.1","port":7897}'></textarea><small>填写一个完整 Clash 节点对象；检测链路应与你实际使用的前置一致。</small></div>
     <label class="opt"><input type="checkbox" id="clearFront"><span>保存时清除已配置的检测前置，并关闭前置开关</span></label>
 
-    <h3>远程转换</h3>
-    <div class="fields">
+    <h3>转换方式</h3>
+    <p class="hint">使用本地规则转换，确保输出只包含本轮通过检测的节点。</p>
+    <div class="fields" hidden>
       <label class="opt"><input type="checkbox" role="switch" id="remote"><span class="opt-body"><span class="opt-title">使用远程 subconverter</span>
         <span class="opt-desc">需另填公开合并地址，否则保持本地套用 ini</span></span></label>
       <div class="f"><label for="mergedUrl">公开的合并中间文件地址（仅远程模式用）</label>
@@ -428,7 +435,7 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
       <tbody id="omitted"></tbody></table>
     </div>
     <div id="availMsg" class="msg" aria-live="polite"></div>
-    <details class="note push"><summary>说明</summary>连续 3 次检测不可用（测不到）的节点不会出现在订阅里，但每轮仍会测试，下次测到可用时自动恢复。若某一轮超过 60% 的节点都测不到，按检测环境故障处理，这一轮不计失败。清空记录后，所有节点重新开始计数。</details>
+    <details class="note push"><summary>说明</summary>本轮连通性未通过的节点立即不返回，下轮仍会重新测试；评分失败不记为连通性失败。这里的历史计数仅用于查看，清空记录不能跳过下轮连通性验证。</details>
   </div>
 </section>
 
@@ -519,6 +526,9 @@ function updatePurityFilter(){
   $('purityFilter').setAttribute('aria-expanded', String(enabled));
 }
 function fillForm(c){
+  $('connectivityUrl').value = c.connectivity_url||'https://cp.cloudflare.com/generate_204';
+  $('connectivityTimeout').value = c.connectivity_timeout_ms||10000;
+  $('fetchFallback').checked = c.fetch_direct_fallback !== false;
   $('fetchProxy').value = c.fetch_proxy_url||'';
   $('frontJson').value = '';
   $('clearFront').checked = false;
@@ -617,10 +627,15 @@ function renderRun(lr){
   if(has('duration_seconds')) rows.push(kv('用时', lr.duration_seconds+' 秒'));
   if(has('groups')) rows.push(kv('分组 / 规则', lr.groups+' 个分组 · '+num(lr.rules)+' 条规则 · '+num(lr.rule_providers)+' 个规则集'));
   if(has('low_purity_group')) rows.push(kv('优选分组', lr.low_purity_group+' · '+num(lr.low_purity_members)+' 个节点'));
-  if(has('purity_delay_screen_failed')) rows.push(kv('延迟筛选', '未通过 '+lr.purity_delay_screen_failed+' 个，其中仍测到 '+num(lr.purity_delay_screen_rescued)+' 个'));
-  if(has('purity_reused')) rows.push(kv('沿用历史分数', lr.purity_reused+' 个（本轮未测到，仍计入检测失败）'));
+  if(has('connectivity_passed')) rows.push(kv('本轮连通性', '通过 '+lr.connectivity_passed+' / '+lr.connectivity_total+' 个 · 排除 '+lr.connectivity_excluded+' 个'));
+  if(!has('connectivity_passed') && lr.kind !== 'reapply') rows.push(kv('连通性记录', '旧版本结果未单独验证连通性，请完成新版检测后更新订阅', 'err'));
+  if(has('purity_unscored_connected')) rows.push(kv('连通但未取得评分', lr.purity_unscored_connected+' 个（不影响连通性判定）'));
+  if(lr.source_routes) rows.push(kv('订阅下载链路', lr.source_routes.map(s => (s.id||'订阅')+'：'+({'proxy':'代理','direct':'直连','direct-fallback':'代理失败后直连','failed':'失败'}[s.route]||s.route)).join('；')));
+  if(lr.front_candidates) rows.push(kv('自动前置候选', lr.front_candidates.join('、')||'没有可用候选'));
+  if(lr.tested_chains) rows.push(kv('已固定检测链路', lr.tested_chains.length+' 个后置节点，具体前置见下方报告'));
+  if(has('purity_reused')) rows.push(kv('沿用历史分数', lr.purity_reused+' 个（已通过本轮连通性，评分失败不计连通失败）'));
   if(has('purity_filter_enabled')) rows.push(kv('纯净度过滤', lr.purity_filter_enabled ? ('≤'+lr.purity_threshold+'% · 保留 '+lr.purity_filter_kept+' 个 · 排除 '+lr.purity_filter_excluded+' 个') : '关闭'));
-  if(has('availability_omitted')) rows.push(kv('连续失败隐藏', lr.availability_omitted+' 个'+(lr.availability_anomaly_skipped ? '（本轮按检测环境故障处理，不计失败）' : '')));
+  if(has('availability_omitted')) rows.push(kv('本轮未通过而隐藏', lr.availability_omitted+' 个'));
   if(has('backend_total')) rows.push(kv('后置节点', lr.backend_total+' 个 · TCP 已注入 '+num(lr.backend_tcp_injected)+' · UDP 未注入 '+num(lr.backend_udp_no_dialer)));
   if(has('guard_previous_proxies')) rows.push(kv('上一版节点数', lr.guard_previous_proxies));
   box.replaceChildren(head, ...rows);
@@ -676,8 +691,8 @@ function renderConfig(c){
   $('webhookState').textContent = c.wechat_webhook ? '当前：已设置' : '当前：未设置';
   const cf = c.check_front||{};
   $('checkFront').textContent = cf.configured ?
-    ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+(cf.server||'')+':'+(cf.port||'')+'）'+(c.check_front_enabled?'，已启用':'，未启用（直连检测）')) :
-    '未配置：静态节点从本服务所在设备直连检测';
+    ('已配置：'+(cf.name||'')+'（'+(cf.type||'')+' '+(cf.server||'')+':'+(cf.port||'')+'）'+(c.check_front_enabled?'，已启用':'，未加入；仍会自动选择前置')) :
+    '自动从本轮已测通节点中挑选前置，最多尝试 8 个不同地区或端点的候选';
   const subs = c.subscriptions||[];
   if(editingSubId && !subs.some(sub => sub.id === editingSubId)){
     closeNameEditor();
@@ -854,6 +869,9 @@ async function saveSettings(runNow = true){
     }
   }
   const body = {run_now: runNow, interval_seconds: parseInt($('interval').value,10),
+    connectivity_url: $('connectivityUrl').value.trim(),
+    connectivity_timeout_ms: parseInt($('connectivityTimeout').value,10),
+    fetch_direct_fallback: $('fetchFallback').checked,
     execution_start: $('executionStart').value,
     execution_end: $('executionEnd').value,
     notify_enabled: $('notify').value==='true',

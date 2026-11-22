@@ -70,6 +70,7 @@ def success_text(report: dict) -> str:
         f"{partial}"
         f"节点：合并 {report.get('total_in', 0)} 个，去重 {report.get('dedup_removed', 0)} 个，"
         f"最终 {report.get('proxies_out', 0)} 个\n"
+        f"本轮连通性：通过 {report.get('connectivity_passed', 0)} 个，排除 {report.get('connectivity_excluded', 0)} 个\n"
         f"纯净度：已测 {report.get('purity_measured', 0)} 个，未测 {report.get('purity_unmeasured', 0)} 个\n"
         f"后置节点：{report.get('backend_total', 0)} 个\n"
         f"{_execution_text(report)}"

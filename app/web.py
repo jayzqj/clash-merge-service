@@ -241,6 +241,9 @@ class SettingsIn(BaseModel):
     use_remote_subconverter: bool | None = None
     merged_public_url: str | None = None
     fetch_proxy_url: str | None = None
+    fetch_direct_fallback: bool | None = None
+    connectivity_url: str | None = None
+    connectivity_timeout_ms: int | None = None
     check_front: dict | None = None
 
 
@@ -310,6 +313,9 @@ async def api_put_config(body: SettingsIn, request: Request,
         data["merged_public_url"] = body.merged_public_url.strip()
     if body.fetch_proxy_url is not None:
         data["fetch_proxy_url"] = body.fetch_proxy_url.strip()
+    for key in ("fetch_direct_fallback", "connectivity_url", "connectivity_timeout_ms"):
+        if getattr(body, key) is not None:
+            data[key] = getattr(body, key)
     if "check_front" in body.model_fields_set:
         data["check_front"] = body.check_front
     trial = Config(data=data, path=cfg.path)

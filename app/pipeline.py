@@ -9,17 +9,15 @@ Pipeline order (hard requirement):
 2. merge + dedup
 3. pre-filter by the ini's exclude_remarks (nodes the converter
    would drop anyway are never tested)
-4. per-node purity check, preserving the last successful score on failure
-5. availability: nodes failing 3 rounds in a row are omitted from
-   the output (still tested next round; back the moment they
-   measure again)
+4. mandatory per-node connectivity, then optional purity (history on score failure)
+5. omit every node without a current-round connectivity pass
 6. optional filter: current or last successful scores <= configured threshold;
    normalize display names (flag + Chinese country name; static
    nodes rebuilt as "🇺🇸 美国 静态31 1.2.3.4"), then sort by purity
    (measured asc, unmeasured last in original order) and prefix
    names with the measured score ("5% ...")
-7. apply the ini (local conversion; remote subconverter opt-in)
-8. inject dialer-proxy AFTER conversion, fill backend groups
+7. apply the ini locally using only verified nodes
+8. pin each backend to the exact verified front AFTER conversion, fill groups
 9. add the low-purity group (measured score <= 15, http excluded)
    to 手动选择 and 国外AI
 10. guard: refuse unexpected empty/collapsed output, accounting for
@@ -59,6 +57,7 @@ import yaml
 
 from app import converter as converter_mod
 from app.availability import load_availability, update_availability
+from app.connectivity import filter_connected, retain_chain_dependencies, pin_tested_chains
 from app.config import Config
 from app.converter import apply_exclude, parse_ini
 from app.dialer import (fill_backend_groups, front_group_from_ini,
@@ -172,10 +171,9 @@ def _guard_output(cfg: Config, doc: dict, report: dict) -> None:
     new = len(doc.get("proxies") or [])
     prev = _published_proxy_count(Path(cfg.output_path))
     report["guard_previous_proxies"] = prev
-    intentional = (report.get("purity_filter_excluded", 0)
-                   + report.get("availability_omitted", 0)
-                   if report.get("purity_filter_enabled") else 0)
-    empty_by_filter = (intentional > 0 and report.get("purity_filter_kept") == 0)
+    intentional = (report.get("connectivity_excluded", 0) + report.get("chain_dependency_excluded", 0)
+                   + report.get("purity_filter_excluded", 0))
+    empty_by_filter = intentional > 0 and new == 0
     if new == 0 and not empty_by_filter:
         raise FetchError("guard", "new output has 0 proxies, not publishing")
     if (prev is not None and prev >= GUARD_MIN_PREVIOUS
@@ -279,6 +277,7 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
                              "run a full round first")
         doc = yaml.safe_load(out_path.read_text(encoding="utf-8")) or {}
         proxies = doc.get("proxies") or []
+        tested_chains = {dedup_key(p): p.get("dialer-proxy") for p in proxies}
         if not proxies:
             raise FetchError("load", "published file has no proxies")
         report["proxies_in"] = len(proxies)
@@ -296,6 +295,13 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
         front_group = front_group_from_ini(ini)
         report["dialer_front_group"] = front_group
         report.update(inject_dialer(doc["proxies"], front_group))
+        published_names = {p["name"] for p in doc["proxies"]}
+        for p in doc["proxies"]:
+            if "静态" in p["name"] and p.get("dialer-proxy"):
+                front = tested_chains.get(dedup_key(p))
+                if front not in published_names:
+                    raise FetchError("chain", "现有后置节点缺少固定的已验证前置，请先完成一轮检测")
+                p["dialer-proxy"] = front
         report["backend_groups_filled"] = fill_backend_groups(
             doc, doc["proxies"])
 
@@ -377,13 +383,14 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                     reason = (res.reason if isinstance(res, FetchError)
                               else f"{type(res).__name__}: {res}"[:300])
                     failed.append({"url": s["url"], "error": reason})
-                    log.warning("fetch: source %s (%s) failed, skipping: %s",
-                                s.get("id"), s["url"], reason)
+                    log.warning("fetch: source %s failed, skipping: %s", s.get("id"), reason)
                     continue
                 fetched.append((s.get("id", "?"), res))
                 log.info("fetch: %s -> %d nodes", s.get("id"), len(res))
             report["sources_ok"] = len(fetched)
             report["sources_failed"] = failed
+            report["source_routes"] = [{"id": s.get("id"), "route": getattr(client, "merge_routes", {}).get(s["url"], "failed")}
+                                       for s in subs]
             if not fetched:
                 raise FetchError(
                     "fetch",
@@ -420,37 +427,42 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                      "exclude_remarks, %d to test",
                      len(merged), pre_excluded, len(to_test))
 
-            step = "purity"
+            # Optional user front joins the same verification pool; it is never trusted unchecked.
+            if cfg.check_front_enabled and cfg.check_front:
+                front = copy.deepcopy(cfg.check_front)
+                if dedup_key(front) not in {dedup_key(p) for p in to_test}:
+                    front["name"] = "自定义检测前置"
+                    to_test.append(front)
+            step = "connectivity"
             report["purity_workers"] = cfg.purity_workers
             checker = MihomoChecker(cfg)
             purity = await asyncio.to_thread(checker.check_all, to_test)
+            if isinstance(checker.summary, dict):
+                report.update(checker.summary)
             purity = apply_history(cfg, to_test, purity)
             measured = sum(1 for r in purity.values() if r.get("measured"))
             report["purity_measured"] = measured
+            report["purity_unscored_connected"] = sum(1 for r in purity.values()
+                                                      if r.get("connected") and not r.get("measured"))
+            report["purity_errors"] = [{"name": p["name"], "reason": purity[dedup_key(p)].get("score_error", "未取得评分")}
+                                       for p in to_test if purity[dedup_key(p)].get("connected")
+                                       and not purity[dedup_key(p)].get("measured")]
             report["purity_unmeasured"] = len(to_test) - measured
             report["purity_mismatched_exit_ip"] = sum(
                 1 for r in purity.values()
                 if r.get("measured") and r.get("match") is False)
-            # Delay screen stats: how many nodes failed the screen,
-            # and how many of those the short info attempt still
-            # measured (the screen's false negatives).
-            screen_failed = [r for r in purity.values()
-                             if r.get("delay_screen") == "fail"]
-            report["purity_delay_screen_failed"] = len(screen_failed)
-            report["purity_delay_screen_rescued"] = sum(
-                1 for r in screen_failed if r.get("measured"))
-
             step = "availability"
-            # Nodes that failed 3 rounds in a row are omitted from
-            # this round's output (they are still tested next round
-            # and come back the moment they measure again).
+            # Current connectivity decides output; history is display-only.
             records = load_availability(cfg)
             kept, astats = update_availability(cfg, records, to_test, purity)
             report.update(astats)
+            kept, connectivity_stats = filter_connected(to_test, purity)
+            report.update(connectivity_stats)
 
             step = "purity-filter"
             kept, filter_stats = filter_by_purity(cfg, kept, purity)
             report.update(filter_stats)
+            kept, report["chain_dependency_excluded"] = retain_chain_dependencies(kept, purity)
 
             step = "normalize-names"
             # Uniform display names: flag + Chinese country name,
@@ -474,26 +486,8 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             step = "convert"
             # Remote conversion fetches an external URL rather than ordered.
             # Filtering must consume this round's actual eligible nodes.
-            if (cfg.data.get("use_remote_subconverter")
-                    and not cfg.data.get("purity_filter_enabled", False)):
-                merged_yaml = yaml.safe_dump(
-                    {"proxies": ordered}, allow_unicode=True, sort_keys=False)
-                doc = await converter_mod.remote_convert(
-                    merged_yaml, cfg.ini_url, cfg.subconverter_base,
-                    cfg.data.get("merged_public_url", ""), client)
-                cstats = {"proxies_out": len(doc.get("proxies", [])),
-                          "groups": len(doc.get("proxy-groups", [])),
-                          "rules": len(doc.get("rules", [])),
-                          "rule_providers": len(doc.get("rule-providers", {})),
-                          "excluded_by_ini": 0, "proxies_in": len(ordered)}
-                # Keep the remote doc as-is: its groups reference the
-                # remote proxy list (which may have dropped nodes per
-                # the ini), so swapping in our list would desync them.
-                if cstats["proxies_out"] != len(ordered):
-                    log.info("remote convert: %d proxies in, %d out",
-                             len(ordered), cstats["proxies_out"])
-            else:
-                doc, cstats = await converter_mod.convert(ordered, ini_text, client)
+            doc, cstats = await converter_mod.convert(ordered, ini_text, client)
+            report["conversion_mode"] = "local_verified"
             report.update(cstats)
 
             step = "dialer-proxy"
@@ -502,6 +496,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             front_group = front_group_from_ini(ini)
             report["dialer_front_group"] = front_group
             dstats = inject_dialer(doc["proxies"], front_group)
+            report["tested_chains"] = pin_tested_chains(doc["proxies"], purity)
             report.update(dstats)
             filled = fill_backend_groups(doc, doc["proxies"])
             report["backend_groups_filled"] = filled

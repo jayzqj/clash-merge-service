@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import asyncio
 
 import httpx
 import yaml
@@ -39,8 +40,12 @@ def make_client(timeout: float = 60.0, cfg=None) -> httpx.AsyncClient:
     proxy = (cfg.data.get("fetch_proxy_url") if cfg else None) or None
     if proxy is None and not desktop_mode():
         proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
-    return httpx.AsyncClient(timeout=timeout, proxy=proxy, trust_env=False,
-                             verify=ssl.create_default_context())
+    client = httpx.AsyncClient(timeout=timeout, proxy=proxy, trust_env=False,
+                              verify=ssl.create_default_context())
+    client.merge_direct_fallback = bool(proxy and cfg and cfg.data.get("fetch_direct_fallback", True))
+    client.merge_route = "proxy" if proxy else "direct"
+    client.merge_routes = {}
+    return client
 
 PLAIN_TEXT_ERROR_MARKERS = (
     "could not be fetched",
@@ -99,23 +104,43 @@ def parse_subscription_body(content: bytes) -> list[dict]:
 
 async def fetch_subscription(url: str, client: httpx.AsyncClient,
                             timeout: float = 60.0) -> list[dict]:
+    return await _fetch(url, client, timeout, parse_subscription_body,
+                        {"User-Agent": "clash-verge/v2.0"})
+
+
+async def _fetch(url, client, timeout, parse, headers=None):
+    async def attempt(active, route):
+        for retry in range(2):
+            try:
+                resp = await active.get(url, timeout=timeout, headers=headers)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPError as exc:
+                transient = isinstance(exc, httpx.TransportError) or (
+                    isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (502, 503, 504))
+                if retry or not transient:
+                    raise
+                await asyncio.sleep(0.3)
+        value = parse(resp.content)
+        if hasattr(client, "merge_routes"):
+            client.merge_routes[url] = route
+        return value
     try:
-        resp = await client.get(url, timeout=timeout,
-                                headers={"User-Agent": "clash-verge/v2.0"})
-    except httpx.HTTPError as e:
-        raise FetchError("fetch", f"HTTP request failed: {e}")
-    if resp.status_code != 200:
-        body = resp.text[:200].strip()
-        raise FetchError("fetch", f"HTTP {resp.status_code} (body: {body!r})")
-    return parse_subscription_body(resp.content)
+        return await attempt(client, getattr(client, "merge_route", "direct"))
+    except (httpx.HTTPError, FetchError) as first:
+        if getattr(client, "merge_direct_fallback", False):
+            try:
+                async with httpx.AsyncClient(timeout=timeout, trust_env=False,
+                                             verify=ssl.create_default_context()) as direct:
+                    return await attempt(direct, "direct-fallback")
+            except (httpx.HTTPError, FetchError) as second:
+                raise FetchError("fetch", f"代理和直连均失败：{type(first).__name__} / {type(second).__name__}") from second
+        if isinstance(first, FetchError):
+            raise
+        status = first.response.status_code if isinstance(first, httpx.HTTPStatusError) else None
+        raise FetchError("fetch", f"{type(first).__name__}" + (f" HTTP {status}" if status else "")) from first
 
 
 async def fetch_text(url: str, client: httpx.AsyncClient,
                      timeout: float = 30.0) -> str:
-    try:
-        resp = await client.get(url, timeout=timeout)
-    except httpx.HTTPError as e:
-        raise FetchError("fetch", f"HTTP request failed for {url}: {e}")
-    if resp.status_code != 200:
-        raise FetchError("fetch", f"HTTP {resp.status_code} fetching {url}")
-    return resp.text
+    return await _fetch(url, client, timeout, lambda body: body.decode("utf-8-sig"))

@@ -1,69 +1,11 @@
-"""Per-node purity check, reusing the existing 3-hourly task's method.
+"""Mandatory current-round connectivity; scoring is independent and optional.
 
-Method (from the existing task, ``check_nodes.py`` / ``run_all.py``):
-- Build a temporary mihomo config from the merged proxies.
-- Start mihomo (only for the duration of the round, then stop it —
-  the VPS has only 2 GB RAM and mihomo must not stay resident).
-- For each node, serially: switch the selector group to that node
-  via the external controller (PUT /proxies/<group>), then query
-  ``https://my.123169.xyz/v1/info`` through mihomo's mixed port and
-  record exit IP / countryCode / fraudScore. Verify the returned exit
-  IP matches the node's expected IP; a mismatch is flagged, not
-  silently accepted. 3 attempts per node.
-- Nodes are keyed by IP (dedup key in this module), never by country
-  label.
-
-Differences from the old task: NO ≤15% threshold and NO filtering —
-every node is kept; purity only orders the output (measured by score
-ascending, unmeasured last in original order).
-
-Backend (静态) nodes are checked DIRECT from the VPS by default (no
-``dialer-proxy`` in the temporary check config). Only the CHECK is
-direct — the published output still gives backend TCP nodes
-``dialer-proxy: <ini 前置 group>`` (see ``app/dialer.py``).
-
-If mihomo is unavailable or ``purity_enabled`` is off, every node is
-returned unmeasured and the pipeline continues — purity must never
-block a merge. On this dev VM UDP is blocked, so hysteria2/tuic
-checks fail here; on the VPS (UDP open) they are expected to work.
-
-Parallel workers (``purity_workers``, default 1 = serial): the check
-is serial by default because all nodes share ONE selector group —
-two threads selecting different nodes would race. With N workers,
-each worker gets its OWN mihomo instance (own mixed/controller
-ports, own workdir, own selector group) and a round-robin shard of
-the nodes; workers run in a thread pool and their results are merged.
-Each worker is an independent ``MihomoChecker``; nothing is shared
-between them except the read-only config.
-
-Why direct: backend nodes are Bright Data superproxy endpoints
-(``http`` to ``brd.superproxy.io:44445``) and the gateway rejects
-airport-front exit IPs (TLS EOF through LA hysteria2 / Japan
-vless fronts, verified 2026-11-12). The VPS's own IP is accepted:
-re-verified 2026-11-14, 170/171 static nodes measured direct from
-the VPS with scores identical to the published file (the one miss
-was a transient TLS EOF). The check config sets ``ipv6: false``
-because the gateway is only reachable over IPv4 from the VPS.
-
-Optional check front (``check_front`` = a full proxy dict in the
-config file, never committed; ``check_front_enabled`` = switch,
-default off): when BOTH are set, backend TCP checks ride that front
-via ``dialer-proxy`` instead of going direct. Useful only if the
-VPS IP ever stops being accepted. There is no automatic fallback to
-an airport front any more — that path never measured anything.
-
-Delay screen (``purity_delay_screen``, default on): before the
-per-node loop each worker runs mihomo's concurrent group delay test
-over its shard. Nodes that pass get the normal check (3 attempts,
-30 s each). Nodes that fail both delay rounds get ONE info attempt
-with a 15 s timeout — a dead node costs ~15 s instead of up to
-~94 s, and a node the delay test wrongly failed is still measured.
+TCP backend nodes use a front verified during this round. Output pins that
+exact front, so client selection cannot silently change the tested chain.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -71,41 +13,49 @@ import time
 import secrets
 import socket
 from pathlib import Path
+from urllib.parse import quote
+from app.dialer import is_backend, is_udp
+from app.purity_history import apply_history, filter_by_purity
+from app.names import CC_TO_CN
 
 import httpx
 import yaml
 
-from app.config import MAX_PURITY_WORKERS as MAX_WORKERS
 from app.merge import dedup_key, expected_ip
 from app.processes import start_process, stop_process, STOPPING
 
 log = logging.getLogger(__name__)
 
 SELECTOR_GROUP = "MERGE-CHECK"
-# Name the check front gets inside the test config (never collides
-# with a subscription node's name).
-FRONT_INTERNAL_NAME = "__check_front__"
 UDP_TYPES = ("hysteria2", "tuic", "wireguard")
-MAX_ATTEMPTS = 3
-RETRY_SLEEP = 2
 INFO_TIMEOUT = 30
 
-# Delay screen (see MihomoChecker.screen_alive). Measured on the VPS
-# 2026-11-14 over 307 nodes: one group delay test takes its timeout
-# (10 s); 60/60 sampled nodes that passed it also measured; but a
-# FAILED delay test is not proof of death — with a 5 s timeout 13 of
-# 22 delay-failed nodes still measured fine, with 10 s only 10 nodes
-# failed both rounds. So the screen is a hint, never a verdict: a
-# node that fails it still gets ONE info attempt with a short timeout
-# instead of MAX_ATTEMPTS x INFO_TIMEOUT.
+# Both sequential and batch mode make at most two connectivity attempts.
 DELAY_URL = "https://cp.cloudflare.com/generate_204"
-DELAY_TIMEOUT_MS = 10000
 DELAY_ROUNDS = 2
-SCREEN_FAIL_TIMEOUT = 15
-# Below this pass share the screen itself is considered broken (test
-# URL down, mihomo overloaded) and is ignored for the shard.
-SCREEN_MIN_PASS_RATIO = 0.2
-SCREEN_MIN_NODES = 5
+MAX_FRONT_CANDIDATES = 8
+
+
+def diversify_fronts(candidates, results):
+    """Keep low-delay order while spreading choices over regions and endpoints."""
+    selected, regions, endpoints = [], set(), set()
+    for p in candidates:
+        rec = results.get(dedup_key(p), {})
+        flag = re.search(r"[\U0001f1e6-\U0001f1ff]{2}", p["name"])
+        region = rec.get("country") or next((cc for cc, cn in CC_TO_CN.items() if cn in p["name"]), None)
+        region = region or (flag.group() if flag else str(p.get("server")))
+        endpoint = (p.get("server"), p.get("type"))
+        if region in regions or endpoint in endpoints:
+            continue
+        selected.append(p); regions.add(region); endpoints.add(endpoint)
+        if len(selected) == MAX_FRONT_CANDIDATES:
+            return selected
+    for p in candidates:
+        if p not in selected:
+            selected.append(p)
+            if len(selected) == MAX_FRONT_CANDIDATES:
+                break
+    return selected
 
 
 def ippure_url(ip: str | None) -> str:
@@ -203,13 +153,11 @@ class MihomoChecker:
         self.info_url = config.data.get("purity_info_url",
                                         "https://my.123169.xyz/v1/info")
         self.controller_secret = secrets.token_urlsafe(24)
-        # Optional dedicated front for backend checks: used only when
-        # check_front is a full proxy dict AND check_front_enabled is
-        # on. Default: backend nodes are checked direct.
-        front = config.data.get("check_front") or None
-        enabled = bool(config.data.get("check_front_enabled", False))
-        self.check_front: dict | None = (
-            front if (enabled and isinstance(front, dict)) else None)
+        self.front_internal_name = "__merge_front_" + secrets.token_hex(8)
+        self.score_failures = 0
+        self.summary = {}
+        # Assigned by the backend stage after this round has verified the front.
+        self.check_front: dict | None = None
 
     def _controller(self, path: str) -> str:
         return f"http://127.0.0.1:{self.controller_port}{path}"
@@ -232,8 +180,9 @@ class MihomoChecker:
             # Renamed internally: a check front sharing its name with
             # a subscription node would make mihomo refuse the config
             # (duplicate proxy name) and lose the whole round.
-            front_name: str | None = FRONT_INTERNAL_NAME
-            extra = [dict(self.check_front, name=FRONT_INTERNAL_NAME)]
+            front_name: str | None = self.front_internal_name
+            extra = [dict(self.check_front, name=self.front_internal_name)]
+            extra[0].pop("dialer-proxy", None)
             log.info("purity worker %d: backend checks ride configured "
                      "front %s", self.worker_id,
                      self.check_front.get("name", ""))
@@ -293,190 +242,169 @@ class MihomoChecker:
             r.raise_for_status()
             return r.json()
 
-    def screen_alive(self, proxies: list[dict]) -> set[str] | None:
-        """Delay screen: one concurrent delay test over the whole
-        selector group (a few seconds for a full shard), repeated
-        DELAY_ROUNDS times; a node passing ANY round is 'alive'.
 
-        Returns the set of alive node names, or None when the screen
-        is disabled / errored / implausible — the caller then checks
-        every node the normal way. Note mihomo answers 504 when every
-        proxy times out, which lands in the error path on purpose."""
+    def check_connection(self, proxy):
+        """Actual HTTP request through this node/chain, independent of scoring."""
+        url = str(self.cfg.data.get("connectivity_url") or DELAY_URL)
+        timeout = int(self.cfg.data.get("connectivity_timeout_ms", 10000))
+        for _ in range(DELAY_ROUNDS):
+            if STOPPING.is_set():
+                break
+            try:
+                r = httpx.get(self._controller("/proxies/" + quote(str(proxy["name"]), safe="") + "/delay"),
+                              headers={"Authorization": f"Bearer {self.controller_secret}"},
+                              params={"url": url, "timeout": timeout, "expected": "200-299"}, timeout=timeout / 1000 + 5, trust_env=False)
+                r.raise_for_status()
+                delay = r.json().get("delay")
+                if type(delay) is int and delay > 0 and proxy["name"] in self.confirm_http_success(url, [proxy["name"]]):
+                    return delay
+            except (httpx.HTTPError, ValueError):
+                pass
+        return None
+
+    def confirm_http_success(self, url, names):
+        # Older Mihomo APIs can return a nonzero delay for an unexpected HTTP
+        # status. The URL-specific health flag includes the expected-status check.
+        r = httpx.get(self._controller("/proxies"),
+                      headers={"Authorization": f"Bearer {self.controller_secret}"},
+                      timeout=5, trust_env=False)
+        r.raise_for_status()
+        proxies = r.json().get("proxies", {})
+        return {name for name in names
+                if proxies.get(name, {}).get("extra", {}).get(url, {}).get("alive") is True}
+
+    def connection_batch(self, proxies):
         if not self.cfg.data.get("purity_delay_screen", True):
-            return None
-        url = str(self.cfg.data.get("purity_delay_url") or DELAY_URL)
-        names = [str(p["name"]) for p in proxies]
-        alive: set[str] = set()
-        try:
-            for _ in range(DELAY_ROUNDS):
-                r = httpx.get(
-                    self._controller(f"/group/{SELECTOR_GROUP}/delay"),
-                    headers={"Authorization": f"Bearer {self.controller_secret}"},
-                    params={"url": url, "timeout": DELAY_TIMEOUT_MS},
-                    timeout=DELAY_TIMEOUT_MS / 1000 + 20, trust_env=False)
+            return {p["name"]: delay for p in proxies if (delay := self.check_connection(p)) is not None}
+        url = str(self.cfg.data.get("connectivity_url") or DELAY_URL)
+        timeout = int(self.cfg.data.get("connectivity_timeout_ms", 10000))
+        passed = {}
+        for _ in range(DELAY_ROUNDS):
+            if STOPPING.is_set():
+                break
+            try:
+                r = httpx.get(self._controller(f"/group/{SELECTOR_GROUP}/delay"),
+                              headers={"Authorization": f"Bearer {self.controller_secret}"},
+                              params={"url": url, "timeout": timeout, "expected": "200-299"}, timeout=timeout / 1000 + 20, trust_env=False)
+                if r.status_code == 504:
+                    continue  # controller explicitly reports no node passed
                 r.raise_for_status()
                 data = r.json()
-                alive.update(n for n in names
-                             if isinstance(data.get(n), int) and data[n] > 0)
-                if len(alive) == len(names):
+                http_ok = self.confirm_http_success(url, [p["name"] for p in proxies])
+                passed.update({p["name"]: data[p["name"]] for p in proxies
+                               if p["name"] in http_ok and type(data.get(p["name"])) is int and data[p["name"]] > 0})
+                if len(passed) == len(proxies):
                     break
-        except Exception as e:  # noqa: BLE001 - screen is optional
-            log.warning("purity worker %d: delay screen failed (%s), "
-                        "checking every node normally", self.worker_id,
-                        f"{type(e).__name__}: {e}"[:200])
-            return None
-        if (len(names) >= SCREEN_MIN_NODES
-                and len(alive) < len(names) * SCREEN_MIN_PASS_RATIO):
-            log.warning("purity worker %d: delay screen passed only %d/%d "
-                        "nodes — ignoring it, checking every node normally",
-                        self.worker_id, len(alive), len(names))
-            return None
-        log.info("purity worker %d: delay screen %d/%d alive",
-                 self.worker_id, len(alive), len(names))
-        return alive
+            except (httpx.HTTPError, ValueError, TypeError):
+                # Unsupported batch endpoint or transient controller error:
+                # verify the remaining nodes individually, never count as passed.
+                for p in proxies:
+                    if p["name"] not in passed:
+                        delay = self.check_connection(p)
+                        if delay is not None:
+                            passed[p["name"]] = delay
+                break
+        return passed
 
-    def check_one(self, proxy: dict, attempts: int = MAX_ATTEMPTS,
-                  timeout: float = INFO_TIMEOUT) -> dict:
-        exp_ip = expected_ip(proxy)
-        last_err = ""
+    def check_one(self, proxy, attempts=2, timeout=10):
+        """Only the score lookup. A failure here never changes connected=True."""
+        empty = {"measured": False, "score": None, "attempts": 0}
+        if not self.cfg.data.get("purity_enabled", True):
+            return {**empty, "score_error": "纯净度检测已关闭"}
+        if self.score_failures >= 3:
+            return {**empty, "score_error": "该检测链路连续三次评分失败，本分片暂停评分"}
+        last = ""
         for attempt in range(attempts):
             if STOPPING.is_set():
                 break
             try:
                 self._select(str(proxy["name"]))
                 data = self._info_once(timeout)
-                got_ip = data.get("ip")
                 score = data.get("fraudScore")
-                if score is None:
-                    raise RuntimeError(f"no fraudScore in {data}")
-                country = data.get("countryCode", "")
-                return {"measured": True, "score": int(score),
-                        "exit_ip": got_ip, "country": country,
-                        "expected_ip": exp_ip,
-                        "match": (got_ip == exp_ip) if exp_ip else None,
-                        "ippure_url": ippure_url(got_ip),
-                        "attempts": attempt + 1}
-            except Exception as e:  # noqa: BLE001 - retry any failure
-                last_err = str(e)[:200]
-                if attempt < attempts - 1:
-                    STOPPING.wait(RETRY_SLEEP)
-        return {"measured": False, "score": None, "exit_ip": None,
-                "country": "", "expected_ip": exp_ip, "match": False,
-                "ippure_url": ippure_url(exp_ip), "error": last_err,
-                "attempts": attempts}
+                if type(score) not in (int, float) or not 0 <= score <= 100:
+                    raise ValueError("评分接口没有返回有效分数")
+                self.score_failures = 0
+                expected = expected_ip(proxy)
+                return {"measured": True, "score": int(score), "exit_ip": data.get("ip"),
+                        "country": data.get("countryCode", ""), "expected_ip": expected,
+                        "match": data.get("ip") == expected if expected else None,
+                        "ippure_url": ippure_url(data.get("ip")), "attempts": attempt + 1}
+            except Exception as exc:
+                last = type(exc).__name__
+        self.score_failures += 1
+        return {**empty, "attempts": attempts, "score_error": last}
 
-    def _check_shard(self, shard: list[dict], worker_id: int) -> dict:
-        """Check one shard with a dedicated mihomo instance. Runs in
-        its own thread; the checker instance is never shared."""
+    def _check_shard(self, shard, worker_id, front=None):
         checker = MihomoChecker(self.cfg, worker_id=worker_id)
-        results: dict = {}
+        checker.check_front = front
         if not checker.start(shard):
-            log.warning("purity worker %d: mihomo unavailable, %d nodes "
-                        "unmeasured", worker_id, len(shard))
-            return results
+            raise RuntimeError(f"检测内核 worker {worker_id} 启动失败，请检查端口和内核日志")
+        results = {}
         try:
-            alive = checker.screen_alive(shard)
+            passed = checker.connection_batch(shard)
+            log.info("worker %d: connectivity passed %d/%d; front=%s", worker_id,
+                     len(passed), len(shard), front.get("name") if front else "direct")
             for p in shard:
                 if STOPPING.is_set():
-                    break
-                if alive is None or str(p["name"]) in alive:
-                    rec = checker.check_one(p)
-                    if alive is not None:
-                        rec["delay_screen"] = "pass"
+                    raise RuntimeError("application is shutting down")
+                if checker.proc.poll() is not None:
+                    raise RuntimeError("检测内核在本轮中途退出")
+                connected = p["name"] in passed
+                rec = {"connected": connected, "delay_ms": passed.get(p["name"]),
+                       "connectivity_attempts": DELAY_ROUNDS, "measured": False, "score": None, "attempts": 0}
+                if front is not None:
+                    rec["front_key"] = dedup_key(front)
+                if connected:
+                    rec.update(checker.check_one(p))
                 else:
-                    # Failed the delay screen: probably dead, but the
-                    # screen has false negatives, so it still gets one
-                    # short info attempt before counting as a failure.
-                    rec = checker.check_one(p, attempts=1,
-                                            timeout=SCREEN_FAIL_TIMEOUT)
-                    rec["delay_screen"] = "fail"
-                if checker.proc is not None and checker.proc.poll() is not None:
-                    # mihomo died mid-shard (e.g. OOM-killed): this node
-                    # and the rest of the shard were not really tested.
-                    # Leave them out -> check_all marks them attempts=0,
-                    # so they do not count as availability failures.
-                    log.warning("purity worker %d: mihomo exited (code %s) "
-                                "mid-shard, %d nodes left unmeasured",
-                                worker_id, checker.proc.returncode,
-                                len(shard) - len(results))
-                    checker.stop()
-                    break
+                    rec["connectivity_error"] = "两轮 HTTP 连通性测试均未通过"
                 results[dedup_key(p)] = rec
+            log.info("worker %d: scoring complete, measured %d/%d", worker_id,
+                     sum(bool(rec.get("measured")) for rec in results.values()), len(passed))
+            return results
         finally:
             checker.stop()
+
+    def _run_stage(self, proxies, front=None):
+        if not proxies:
+            return {}
+        workers = max(1, min(self.cfg.purity_workers, len(proxies)))
+        if workers == 1:
+            return self._check_shard(proxies, 0, front)
+        import concurrent.futures
+        results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(self._check_shard, shard, i, front)
+                       for i, shard in enumerate(_shard(proxies, workers))]
+            for future in concurrent.futures.as_completed(futures):
+                results.update(future.result())  # a broken checker fails the round, never fabricates passes
         return results
 
-    def probe_info(self) -> str:
-        """Direct (no proxy) request to the info endpoint before a
-        round. Returns "" if it answers with a fraudScore, else the
-        error. If the endpoint itself is down or rate-limiting, every
-        node would 'fail' — that must not count against the nodes."""
-        last = ""
-        for attempt in range(2):
-            if STOPPING.is_set():
-                return "application is shutting down"
-            try:
-                with httpx.Client(timeout=15, trust_env=False) as client:
-                    r = client.get(self.info_url,
-                                   headers={"User-Agent": "Mozilla/5.0"})
-                    r.raise_for_status()
-                    if r.json().get("fraudScore") is None:
-                        raise RuntimeError("no fraudScore in response")
-                    return ""
-            except Exception as e:  # noqa: BLE001 - reported to the caller
-                last = f"{type(e).__name__}: {e}"[:200]
-                if attempt == 0:
-                    STOPPING.wait(RETRY_SLEEP)
-        return last
-
-    def check_all(self, proxies: list[dict]) -> dict:
-        """Returns {dedup_key: purity-record}.
-
-        ``purity_workers`` (default 1) controls parallelism: 1 runs
-        the old serial path; N > 1 splits the nodes round-robin
-        across N workers, each with its own mihomo instance, and
-        merges the results. A worker that fails to start only loses
-        its own shard (those nodes come back unmeasured); it never
-        aborts the other workers.
-        """
-        results: dict = {}
-        skip_reason = "purity check skipped/unavailable"
-        probe_err = ""
-        if not self.cfg.data.get("purity_enabled", True):
-            log.info("purity: disabled in config, all nodes unmeasured")
-        elif not proxies:
-            return results
-        elif (probe_err := self.probe_info()):
-            # Info endpoint unreachable from the VPS itself: nothing
-            # this round could measure. All nodes stay attempts=0.
-            log.warning("purity: info endpoint %s unreachable directly "
-                        "(%s) — skipping this round's checks, nodes "
-                        "left unmeasured and not counted as failures",
-                        self.info_url, probe_err)
-            skip_reason = f"info endpoint unreachable: {probe_err}"
-        else:
-            workers = int(self.cfg.data.get("purity_workers", 1) or 1)
-            workers = max(1, min(workers, MAX_WORKERS, len(proxies)))
-            if workers == 1:
-                results = self._check_shard(proxies, 0)
-            else:
-                import concurrent.futures
-                shards = _shard(proxies, workers)
-                log.info("purity: %d workers, shards %s",
-                         workers, [len(s) for s in shards])
-                with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=workers) as pool:
-                    futs = [pool.submit(self._check_shard, shard, i)
-                            for i, shard in enumerate(shards)]
-                    for fut in concurrent.futures.as_completed(futs):
-                        try:
-                            results.update(fut.result())
-                        except Exception as e:  # noqa: BLE001 - one shard must not kill the round
-                            log.warning("purity: worker failed: %s", e)
-        for p in proxies:
-            results.setdefault(dedup_key(p), {
-                "measured": False, "score": None, "exit_ip": None,
-                "country": "", "expected_ip": expected_ip(p),
-                "match": False, "ippure_url": ippure_url(expected_ip(p)),
-                "error": skip_reason, "attempts": 0})
+    def check_all(self, proxies):
+        direct = [p for p in proxies if not is_backend(p) or is_udp(p)]
+        backends = [p for p in proxies if is_backend(p) and not is_udp(p)]
+        results = self._run_stage(direct)
+        # Prefer fronts eligible for publication. Scores cannot prevent the
+        # backend connectivity test; dependency filtering happens later.
+        candidates = [p for p in direct if not is_backend(p) and results[dedup_key(p)].get("connected")]
+        scored = apply_history(self.cfg, direct, results)
+        eligible, _ = filter_by_purity(self.cfg, candidates, scored)
+        eligible_keys = {dedup_key(p) for p in eligible}
+        candidates.sort(key=lambda p: (dedup_key(p) not in eligible_keys,
+                                       results[dedup_key(p)].get("delay_ms", 10**9)))
+        candidates = diversify_fronts(candidates, results)
+        self.summary = {"front_candidates": [p["name"] for p in candidates],
+                        "connectivity_url": self.cfg.data.get("connectivity_url") or DELAY_URL,
+                        "connectivity_timeout_ms": self.cfg.data.get("connectivity_timeout_ms", 10000)}
+        pending = backends
+        for front in candidates:
+            if not pending:
+                break
+            checked = self._run_stage(pending, front)
+            results.update(checked)
+            pending = [p for p in pending if not checked[dedup_key(p)].get("connected")]
+        for p in backends:
+            results.setdefault(dedup_key(p), {"connected": False, "connectivity_attempts": 0,
+                               "connectivity_error": "本轮没有测通的前置节点，无法验证后置链路",
+                               "measured": False, "score": None, "attempts": 0})
         return results
