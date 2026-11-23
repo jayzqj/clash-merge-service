@@ -13,12 +13,37 @@ ALIASES = {"hy2": "hysteria2", "hy": "hysteria", "wg": "wireguard", "socks": "so
 SCHEMES = PROTOCOLS | set(ALIASES) | {"https"}
 
 
+class LinkImportError(ValueError):
+    """Safe parser explanation; must never contain URI values or credentials."""
+
+
+def _hostname(value):
+    # Some copied Markdown exports escape dots. Only fix hostname fields,
+    # never passwords, paths or arbitrary YAML/JSON values.
+    return value.replace(r"\.", ".") if isinstance(value, str) else value
+
+
+def _skip_certificate(q):
+    values = []
+    for key in ('insecure', 'allowInsecure', 'allow_insecure', 'skip-cert-verify'):
+        if key not in q:
+            continue
+        value = q[key].lower()
+        if value not in ('0', '1', 'true', 'false'):
+            raise LinkImportError('跳过证书验证参数必须是 0/1 或 true/false')
+        values.append(value in ('1', 'true'))
+    if len(set(values)) > 1:
+        raise LinkImportError('跳过证书验证参数互相冲突，请统一 insecure / allowInsecure / allow_insecure 的值')
+    return values[0] if values else None
+
+
 def decode64(value):
     value = value.strip()
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)).decode("utf-8")
 
 
 def normalize_links(value):
+    value = re.sub(r'^(?:\s|\ufeff|&#(?:x20|32|xa0|160);|&nbsp;)+', '', value, flags=re.I)
     return value.strip().replace(r"\://", "://")
 
 
@@ -99,18 +124,18 @@ def parse_link(link):
             link = "ss://" + decode64(raw) + (sep + fragment if sep else "")
         u = urlsplit(link)
         q = {k: vals[-1] for k, vals in parse_qs(u.query, keep_blank_values=True).items()}
-        common = {'sni','peer','fp','alpn','insecure','allowInsecure'}
+        common = {'sni','peer','fp','alpn','insecure','allowInsecure','allow_insecure','skip-cert-verify'}
         known = {
             'ss': {'plugin'}, 'vless': {'encryption','flow','security','pbk','sid','type','host','path','serviceName','headerType'},
             'trojan': {'type','host','path','serviceName','security','headerType'}, 'anytls': {'security'},
-            'hysteria2': {'obfs','obfs-password'}, 'tuic': {'congestion_control','udp_relay_mode'},
+            'hysteria2': {'obfs','obfs-password','security','pinSHA256'}, 'tuic': {'congestion_control','udp_relay_mode','security'},
             'hysteria': {'auth','protocol','upmbps','downmbps','up','down','obfs','obfsParam'},
             'snell': {'psk','version','obfs','obfs-host'},
             'wireguard': {'private-key','publickey','public-key','address','ip','reserved','mtu','presharedkey','pre-shared-key'},
             'mieru': {'transport','multiplexing'}, 'ssh': {'private-key'},
         }
         if set(q) - common - known.get(scheme, set()):
-            raise ValueError('该链接含尚无映射的参数，请改用原生 Clash YAML/JSON 保留全部字段')
+            raise LinkImportError('含有暂未支持的查询参数，请使用原生 Clash YAML/JSON 保留完整字段')
         if q.get('headerType') not in (None, '', 'none') or q.get('encryption') not in (None, '', 'none'):
             raise ValueError('该传输变体请使用 Clash YAML/JSON 节点配置')
         node = {"name": unquote(u.fragment) or scheme, "type": {"hy2": "hysteria2", "https": "http"}.get(scheme, scheme),
@@ -143,14 +168,23 @@ def parse_link(link):
             node["password"] = user + (":" + password if u.password is not None else "")
             if scheme == 'trojan':
                 _transport(node, q.get("type"), q.get("host", ""), q.get("path", ""), q.get("serviceName", ""))
-            elif q.get('security') == 'reality':
-                raise ValueError('Mihomo AnyTLS 不支持 Reality')
+            if q.get('security') not in (None, '', 'tls'):
+                raise LinkImportError('该协议只支持 TLS；Mihomo AnyTLS 不支持 Reality')
         elif scheme in ("hysteria2", "hy2"):
+            if q.get('security') not in (None, '', 'tls'):
+                raise LinkImportError('Hysteria2 只支持 TLS 安全类型')
             node["password"] = user + (":" + password if u.password is not None else "")
+            if 'pinSHA256' in q:
+                pin = q['pinSHA256'].replace(':', '').lower()
+                if not re.fullmatch(r'[0-9a-f]{64}', pin):
+                    raise LinkImportError('pinSHA256 必须是 64 位十六进制 SHA256 证书指纹，可带冒号分隔')
+                node['fingerprint'] = pin
             if q.get("obfs"):
                 node.update(obfs=q["obfs"])
                 node["obfs-password"] = q.get("obfs-password", "")
         elif scheme == "tuic":
+            if q.get('security') not in (None, '', 'tls'):
+                raise LinkImportError('TUIC 只支持 TLS 安全类型')
             node.update(uuid=user, password=password)
             for key in ("congestion_control", "udp_relay_mode"):
                 if q.get(key): node[key.replace("_", "-")] = q[key]
@@ -190,8 +224,12 @@ def parse_link(link):
         if q.get("fp"): node["client-fingerprint"] = q["fp"]
         if q.get('peer') and scheme == 'hysteria': node['sni'] = q['peer']
         if q.get("alpn"): node["alpn"] = q["alpn"].split(",")
-        if q.get("insecure") in ("1", "true") or q.get("allowInsecure") in ("1", "true"):
-            node["skip-cert-verify"] = True
+        skip_certificate = _skip_certificate(q)
+        if skip_certificate is not None:
+            node["skip-cert-verify"] = skip_certificate
+    for key in ('server', 'sni', 'servername'):
+        if key in node:
+            node[key] = _hostname(node[key])
     if not node.get("server") or not isinstance(node.get("port"), int) or not 1 <= node["port"] <= 65535:
         raise ValueError("节点缺少合法的服务器地址或端口")
     if node["type"] in ("vless", "vmess", "tuic") and not node.get("uuid"):
@@ -213,6 +251,8 @@ def parse_node_source(value):
     for index, link in enumerate(links, 1):
         try:
             result.append(parse_link(link))
+        except LinkImportError as exc:
+            raise ValueError(f"第 {index} 个节点链接：{exc}") from None
         except Exception:
             # Credentials and full URIs must not leak via parser exceptions.
             raise ValueError(f"第 {index} 个节点链接无效或使用了不支持的传输参数") from None

@@ -30,6 +30,15 @@ def main():
     for protocol in sorted(PROTOCOLS):
         node=dict(name='fixture-'+protocol,type=protocol,server='192.0.2.1',port=443,**extras.get(protocol,{}))
         if protocol in ('direct','dns','reject'):node.pop('server');node.pop('port')
+        if protocol == 'hysteria2':
+            node = parse_node_source(r'hysteria2://fixture@192.0.2.1:443?security=tls&alpn=h3&insecure=0&allowInsecure=0&sni=www\.example.com&pinSHA256='+'ab'*32+'#fixture-hysteria2')[0]
+            assert node['fingerprint'] == 'ab'*32 and node['skip-cert-verify'] is False
+        elif protocol == 'tuic':
+            node = parse_node_source('tuic://'+uuid+r':fixture@192.0.2.1:443?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=www\.example.com&insecure=1&allowInsecure=1&allow_insecure=1#fixture-tuic')[0]
+            assert node['sni'] == 'www.example.com' and node['skip-cert-verify'] is True
+        elif protocol == 'anytls':
+            node = parse_node_source(r'anytls\://fixture@192.0.2.1:443?&sni=www\.example.com&insecure=1&allowInsecure=1#fixture-anytls')[0]
+            assert node['sni'] == 'www.example.com' and node['skip-cert-verify'] is True
         nodes.append(node)
     encoded=yaml.safe_dump({'proxies':nodes})
     assert parse_node_source(encoded)==nodes

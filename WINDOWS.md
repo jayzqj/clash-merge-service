@@ -69,4 +69,6 @@ py -m venv .venv
 - 首页分别显示普通节点（不含静态）、静态节点数量，以及本轮已用时 / 预计总用时。预计值参考上一轮或本轮进度，会随重试调整，并非完成时间保证。
 - 页面使用 `/api/status?summary=true` 和精简配置摘要；不显示、轮询或渲染原始 JSON、被过滤节点列表、当前不输出节点列表。完整诊断报告仍保存在数据目录 `state.json`，接口默认完整形式保留兼容性。配置的“只保存”仍从下轮生效。
 
+分享链接兼容 `insecure`、`allowInsecure`、`allow_insecure`、`skip-cert-verify`，支持 `0/1` 或 `true/false`，同一链接的别名值冲突时会明确报错。Hysteria2 的 `security=tls` 与 `pinSHA256` 会转换为对应的内核 TLS 配置及 `fingerprint`，保留证书指纹验证。粘贴文本中的 `www\.example.com` 仅在域名字段还原为 `www.example.com`，不会修改密码或路径。
+
 验证：`python -m unittest discover -s tests -q`；`python scripts/verify_connectivity.py [mihomo路径]`；`python scripts/verify_stability.py [mihomo路径]`；`python scripts/verify_protocol_import.py [mihomo路径]`。后两项用真实内核验证 3/5 次采样投票和全部 18 种原生协议配置。

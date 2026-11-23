@@ -77,6 +77,48 @@ class StabilityTests(unittest.TestCase):
 
 
 class LinkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_six_mixed_links_with_tls_aliases_and_markdown_escapes(self):
+        vmess_tls = {'add':'edge.example.invalid','port':'443','id':'fixture-uuid','aid':'0','net':'ws',
+                     'host':'ws.example.invalid','path':'/vm','tls':'tls','sni':'ws.example.invalid','ps':'vmess tls'}
+        vmess_plain = {**vmess_tls, 'add':'192.0.2.1','port':'2082','tls':'','ps':'vmess plain'}
+        encode = lambda data: base64.b64encode(json.dumps(data).encode()).decode()
+        links = [r'vless\://fixture@192.0.2.1:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=example.com&fp=chrome&pbk=fixture&sid=abcd&type=tcp&headerType=none#vless',
+                 r'vmess\://'+encode(vmess_tls), r'vmess\://'+encode(vmess_plain),
+                 r'hysteria2://fixture@192.0.2.1:443?security=tls&alpn=h3&insecure=0&allowInsecure=0&sni=www\.example.com&pinSHA256='+'ab'*32+'#hy2',
+                 r'tuic://fixture:password@192.0.2.1:443?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=www\.example.com&insecure=1&allowInsecure=1&allow_insecure=1#tuic',
+                 r'anytls\://fixture@192.0.2.1:443?&sni=www\.example.com&allowInsecure=1&insecure=1#anytls']
+        for prefix in (' ', '&#x20; ', '\ufeff\u00a0'):
+            nodes = parse_node_source(prefix+'|'.join(links))
+            self.assertEqual([p['type'] for p in nodes],['vless','vmess','vmess','hysteria2','tuic','anytls'])
+            self.assertEqual(nodes[3]['fingerprint'], 'ab'*32)
+            self.assertFalse(nodes[3]['skip-cert-verify'])
+            for p in nodes[3:]: self.assertEqual(p['sni'], 'www.example.com')
+            for p in nodes[4:]: self.assertTrue(p['skip-cert-verify'])
+            self.assertEqual(nodes[4]['udp-relay-mode'],'native')
+            self.assertTrue(nodes[1]['tls'])
+            self.assertFalse(nodes[2]['tls'])
+
+    async def test_tls_aliases_conflicts_and_pin_validation(self):
+        for key in ('insecure','allowInsecure','allow_insecure','skip-cert-verify'):
+            for value, expected in [('0',False),('FALSE',False),('1',True),('true',True)]:
+                p=parse_node_source(f'tuic://fixture:password@192.0.2.1:443?{key}={value}')[0]
+                self.assertIs(p['skip-cert-verify'],expected)
+        for query in ('insecure=0&allow_insecure=1','insecure=maybe','security=reality','pinSHA256=private-invalid-value'):
+            with self.assertRaises(ValueError) as caught:
+                parse_node_source('hysteria2://private-password@192.0.2.1:443?'+query)
+            self.assertNotIn('private',str(caught.exception))
+            self.assertIn('第 1 个',str(caught.exception))
+        pin=':'.join(['AB']*32)
+        p=parse_node_source('hy2://fixture@192.0.2.1:443?pinSHA256='+pin)[0]
+        self.assertEqual(p['fingerprint'],'ab'*32)
+
+    async def test_hostname_unescaping_does_not_change_secrets_or_paths(self):
+        p=parse_node_source(r'trojan://pass\.word@edge\.example.com:443?sni=www\.example.com&type=ws&path=/keep%5C.path')[0]
+        self.assertEqual(p['password'],r'pass\.word')
+        self.assertEqual(p['server'],'edge.example.com')
+        self.assertEqual(p['sni'],'www.example.com')
+        self.assertEqual(p['ws-opts']['path'],r'/keep\.path')
+
     async def test_all_core_protocols_have_lossless_native_import(self):
         for protocol in PROTOCOLS:
             original = dict(node(protocol=protocol), **{'custom-future-field':{'nested':['retained']}})
