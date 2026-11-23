@@ -19,9 +19,11 @@ from __future__ import annotations
 import base64
 import binascii
 import asyncio
+import re
 
 import httpx
 import yaml
+from app.node_links import is_node_source, parse_node_source, decode64, parse_clash_nodes, normalize_links
 
 # httpx must NOT read proxy settings from the environment implicitly:
 # this dev VM's NO_PROXY contains bracketed IPv6 entries that httpx
@@ -82,28 +84,39 @@ def _parse_proxies(text: str) -> list[dict]:
 
 def parse_subscription_body(content: bytes) -> list[dict]:
     """Parse raw subscription bytes; handles plain YAML and base64 YAML."""
-    text = content.decode("utf-8", errors="replace").strip()
+    text = normalize_links(content.decode("utf-8", errors="replace"))
     if not text:
         raise FetchError("fetch", "empty response body")
     for marker in PLAIN_TEXT_ERROR_MARKERS:
         if marker in text[:500]:
             raise FetchError("fetch", f"provider error text in body ({marker!r})")
+    for candidate in (text,):
+        if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', candidate):
+            try:
+                return parse_node_source(candidate)
+            except ValueError as exc:
+                raise FetchError("fetch", str(exc)) from None
     try:
-        return _parse_proxies(text)
-    except FetchError:
-        raise
-    except yaml.YAMLError:
+        return parse_clash_nodes(text)
+    except (ValueError, yaml.YAMLError):
         pass
-    # Some providers return base64-encoded YAML.
     try:
-        decoded = base64.b64decode(text, validate=False).decode("utf-8")
-        return _parse_proxies(decoded)
-    except (binascii.Error, UnicodeDecodeError, yaml.YAMLError, FetchError) as e:
-        raise FetchError("fetch", f"response is not parseable Clash YAML: {e}")
+        decoded = decode64(text)
+        return parse_node_source(decoded)
+    except (ValueError, binascii.Error, UnicodeDecodeError, yaml.YAMLError, FetchError):
+        raise FetchError("fetch", "响应不是有效的 Clash YAML 或节点分享链接") from None
 
 
 async def fetch_subscription(url: str, client: httpx.AsyncClient,
                             timeout: float = 60.0) -> list[dict]:
+    if is_node_source(url):
+        try:
+            nodes = parse_node_source(url)
+        except ValueError as exc:
+            raise FetchError("fetch", str(exc)) from None
+        if hasattr(client, "merge_routes"):
+            client.merge_routes[url] = "local"
+        return nodes
     return await _fetch(url, client, timeout, parse_subscription_body,
                         {"User-Agent": "clash-verge/v2.0"})
 

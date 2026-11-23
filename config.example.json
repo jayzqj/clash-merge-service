@@ -43,5 +43,7 @@
   "connectivity_url": "https://cp.cloudflare.com/generate_204",
   "connectivity_timeout_ms": 10000,
   "fetch_proxy_url": "",
-  "fetch_direct_fallback": true
+  "fetch_direct_fallback": true,
+  "connectivity_rounds": 3,
+  "excluded_protocols": []
 }

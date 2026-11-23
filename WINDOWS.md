@@ -18,7 +18,7 @@ Linux 继续使用 `main.py` 和 systemd（见 `deploy/DEPLOY.md`）。Windows �
 
 本机与 VPS 的路由、运营商、UDP 可用性可能不同，因此应使用本机检测结果判断本机链路。检测默认不读取系统 HTTP 代理环境，检测内核不启用 TUN。**其他客户端的 TUN 仍可能接管流量**：在该客户端为 `clash-merge-mihomo.exe` 配置直连规则，或检测时关闭 TUN；应按实际使用场景选择。
 
-每轮必须通过独立的 HTTP 连通性测试才能返回节点，失败或未完成验证的节点当轮不输出。默认测试 `https://cp.cloudflare.com/generate_204`，超时 10 秒，最多两轮，可在后台设置为与 Clash Verge 相同的目标和超时。批量检测开关只控制测试方式，不能关闭连通性验证。
+每轮必须通过独立的 HTTP 连通性测试才能返回节点，失败或未完成验证的节点当轮不输出。默认测试 `https://cp.cloudflare.com/generate_204`，超时 10 秒，默认连续 3 次、至少通过 2 次（可选 5 次、至少通过 3 次），可在后台设置为与 Clash Verge 相同的目标和超时。批量检测开关只控制测试方式，不能关闭连通性验证。
 
 第三方评分接口不可达只影响纯净度，不会跳过连通性检测；关闭纯净度开关也照常测试连通性。每个已连通节点最多两次评分请求，每次 10 秒；某分片连续三个已连通节点评分失败后，该分片暂缓后续评分，下一轮重新尝试。评分失败沿用历史分数；过滤关闭时保留已连通的未评分节点，过滤开启时还须满足本轮或历史分数阈值，没有分数则排除。
 
@@ -55,3 +55,18 @@ py -m venv .venv
 产物 `dist\ClashMerge\ClashMerge.exe` 和 `dist\ClashMerge-Windows-x64.zip`。构建脚本下载官方 Mihomo v1.19.15 及地理数据库并核对 SHA256。数据库 `latest` 会更新；若校验失败，应核对官方发布后更新脚本中的哈希，不能跳过校验。已有核实的 `vendor` 目录可用 `--skip-download` 重建。
 
 发布包使用 PyInstaller 目录模式，首次运行无需安装 Python。此构建未做代码签名。第三方组件说明见 `THIRD_PARTY.md`，许可文本位于发布包 `licenses`。
+
+
+### 稳定性检测、协议过滤与节点导入
+
+- `connectivity_rounds` 可选 `3`（默认）或 `5`。每条链路完成全部采样后按严格多数判定，分别要求至少 2/3、3/5 成功；采样间隔至少 0.5 秒，HTTP 状态必须是 200–299。报告保留每个节点的样本和成功次数，不因评分失败改变结果。
+- 同一静态节点的一组样本使用同一个已验证前置；更换候选前置时重新计数，不混合不同链路的票数。多实例线程池与内核批量并发配合；关闭批量方式时使用每实例最多 8 个线程的受限线程池。
+- `excluded_protocols` 是不输出的协议名称数组，后台可多选；排除发生在检测前，也适用于手工前置候选。纯净度、协议和连通性规则都满足后才发布。
+- 订阅输入支持 HTTP(S) 订阅地址、单节点分享链接（多个用 `|` 或换行分隔），以及原生 Clash YAML/JSON（单节点、节点数组、`proxies:` 文档）。本地节点不经过远程转换服务。支持带 `\://` 的粘贴文本。
+- 分享链接解析涵盖 SS、SSR、VMess、VLESS、Trojan、Hysteria、Hysteria2/Hy2、TUIC、AnyTLS、SOCKS5、HTTP(S) 代理，以及 Snell、WireGuard、SSH、Mieru 的常用 URI 字段。不同客户端的非标准参数会明确报错；复杂传输、多 peer、密钥等用原生 YAML/JSON 保留全部字段。HTTP(S) 代理可使用 `http-proxy://` / `https-proxy://` 避免与订阅网址混淆。这里不会将一个协议误当成另一个协议导入。
+- 原生配置覆盖所捆绑 Mihomo v1.19.15 的全部 18 种类型：`ss`、`ssr`、`socks5`、`http`、`vmess`、`vless`、`snell`、`trojan`、`hysteria`、`hysteria2`、`wireguard`、`tuic`、`ssh`、`mieru`、`anytls`，以及内核内置的 `direct`、`dns`、`reject`。后三者不是远端代理，仍适用连通性过滤。更新内核才可使用该内核新增的协议；原生字段不会被导入器删减。
+- 最终节点名末尾追加 IPv4：优先本轮测得的出口 IPv4，其次已有静态 IP、服务器 IPv4、服务器域名解析的 IPv4。没有可用 IPv4 时不编造；IPv6 不追加。分组与固定前置引用同步更新，重名编号放在 IP 前面。
+- 首页分别显示普通节点（不含静态）、静态节点数量，以及本轮已用时 / 预计总用时。预计值参考上一轮或本轮进度，会随重试调整，并非完成时间保证。
+- 页面使用 `/api/status?summary=true` 和精简配置摘要；不显示、轮询或渲染原始 JSON、被过滤节点列表、当前不输出节点列表。完整诊断报告仍保存在数据目录 `state.json`，接口默认完整形式保留兼容性。配置的“只保存”仍从下轮生效。
+
+验证：`python -m unittest discover -s tests -q`；`python scripts/verify_connectivity.py [mihomo路径]`；`python scripts/verify_stability.py [mihomo路径]`；`python scripts/verify_protocol_import.py [mihomo路径]`。后两项用真实内核验证 3/5 次采样投票和全部 18 种原生协议配置。

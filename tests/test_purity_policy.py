@@ -234,6 +234,18 @@ class PipelineTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         _, doc = await self.run_round([p], result(p, 70))
         self.assertEqual(doc["proxies"], [])
 
+    async def test_protocol_exclusion_before_testing_and_empty_output(self):
+        ps = [node(i) for i in range(30)]
+        records = {k: v for p in ps for k, v in result(p, 5).items()}
+        await self.run_round(ps, records)
+        self.cfg.data['excluded_protocols'] = [ps[0]['type']]
+        report, doc = await self.run_round(ps, {})
+        self.assertEqual(report['protocol_excluded'], 30)
+        self.assertEqual(report['connectivity_total'], 0)
+        self.assertEqual(doc['proxies'], [])
+        self.assertEqual(report['ordinary_nodes_out'], 0)
+        self.assertEqual(report['static_nodes_out'], 0)
+
     async def test_success_notification_uses_round_filter_and_actual_next_schedule(self):
         self.cfg.data.update(notify_enabled=True, wechat_webhook="https://example.invalid/webhook",
                              purity_filter_enabled=True, purity_threshold=15)

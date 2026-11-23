@@ -13,6 +13,8 @@ import subprocess
 import time
 import secrets
 import socket
+import statistics
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import quote
 from app.dialer import is_backend, is_udp
@@ -31,9 +33,8 @@ SELECTOR_GROUP = "MERGE-CHECK"
 UDP_TYPES = ("hysteria2", "tuic", "wireguard")
 INFO_TIMEOUT = 30
 
-# Both sequential and batch mode make at most two connectivity attempts.
+# Each node must pass a strict majority of all configured samples.
 DELAY_URL = "https://cp.cloudflare.com/generate_204"
-DELAY_ROUNDS = 2
 MAX_FRONT_CANDIDATES = 8
 
 
@@ -108,7 +109,7 @@ def build_mihomo_config(proxies: list[dict], front_name: str | None,
         # Only with an explicitly enabled check front do backend TCP
         # nodes ride it; UDP nodes cannot carry dialer-proxy.
         if front_name and "静态" in str(node.get("name", "")):
-            if str(node.get("type", "")).lower() not in UDP_TYPES:
+            if not is_udp(node):
                 node["dialer-proxy"] = front_name
         cfg_proxies.append(node)
     for p in (extra_proxies or []):
@@ -157,6 +158,8 @@ class MihomoChecker:
         self.front_internal_name = "__merge_front_" + secrets.token_hex(8)
         self.score_failures = 0
         self.summary = {}
+        self.connection_samples = {}
+        self.progress = lambda **values: None
         # Assigned by the backend stage after this round has verified the front.
         self.check_front: dict | None = None
 
@@ -248,13 +251,11 @@ class MihomoChecker:
             return r.json()
 
 
-    def check_connection(self, proxy):
-        """Actual HTTP request through this node/chain, independent of scoring."""
+    def _probe_once(self, proxy):
+        """One sample only; retries must never turn one sample into multiple votes."""
         url = str(self.cfg.data.get("connectivity_url") or DELAY_URL)
         timeout = int(self.cfg.data.get("connectivity_timeout_ms", 10000))
-        for _ in range(DELAY_ROUNDS):
-            if STOPPING.is_set():
-                break
+        if not STOPPING.is_set():
             try:
                 r = httpx.get(self._controller("/proxies/" + quote(str(proxy["name"]), safe="") + "/delay"),
                               headers={"Authorization": f"Bearer {self.controller_secret}"},
@@ -267,6 +268,9 @@ class MihomoChecker:
                 pass
         return None
 
+    def check_connection(self, proxy):
+        return self.connection_batch([proxy], individual=True).get(proxy["name"])
+
     def confirm_http_success(self, url, names):
         # Older Mihomo APIs can return a nonzero delay for an unexpected HTTP
         # status. The URL-specific health flag includes the expected-status check.
@@ -278,38 +282,53 @@ class MihomoChecker:
         return {name for name in names
                 if proxies.get(name, {}).get("extra", {}).get(url, {}).get("alive") is True}
 
-    def connection_batch(self, proxies):
-        if not self.cfg.data.get("purity_delay_screen", True):
-            return {p["name"]: delay for p in proxies if (delay := self.check_connection(p)) is not None}
+    def connection_batch(self, proxies, individual=False):
         url = str(self.cfg.data.get("connectivity_url") or DELAY_URL)
         timeout = int(self.cfg.data.get("connectivity_timeout_ms", 10000))
-        passed = {}
-        for _ in range(DELAY_ROUNDS):
+        rounds = int(self.cfg.data.get("connectivity_rounds", 3))
+        required = rounds // 2 + 1
+        samples = {p["name"]: [] for p in proxies}
+        individual = individual or not self.cfg.data.get("purity_delay_screen", True)
+        for index in range(rounds):
             if STOPPING.is_set():
                 break
-            try:
-                r = httpx.get(self._controller(f"/group/{SELECTOR_GROUP}/delay"),
-                              headers={"Authorization": f"Bearer {self.controller_secret}"},
-                              params={"url": url, "timeout": timeout, "expected": "200-299"}, timeout=timeout / 1000 + 20, trust_env=False)
-                if r.status_code == 504:
-                    continue  # controller explicitly reports no node passed
-                r.raise_for_status()
-                data = r.json()
-                http_ok = self.confirm_http_success(url, [p["name"] for p in proxies])
-                passed.update({p["name"]: data[p["name"]] for p in proxies
-                               if p["name"] in http_ok and type(data.get(p["name"])) is int and data[p["name"]] > 0})
-                if len(passed) == len(proxies):
-                    break
-            except (httpx.HTTPError, ValueError, TypeError):
-                # Unsupported batch endpoint or transient controller error:
-                # verify the remaining nodes individually, never count as passed.
-                for p in proxies:
-                    if p["name"] not in passed:
-                        delay = self.check_connection(p)
-                        if delay is not None:
-                            passed[p["name"]] = delay
+            if index and STOPPING.wait(0.5):
                 break
-        return passed
+            passed = {}
+            try:
+                if individual:
+                    with ThreadPoolExecutor(max_workers=min(8, max(1, len(proxies)))) as pool:
+                        delays = list(pool.map(self._probe_once, proxies))
+                    passed = {p["name"]: d for p, d in zip(proxies, delays) if d is not None}
+                else:
+                    passed = self._batch_once(proxies, url, timeout)
+            except (httpx.HTTPError, ValueError, TypeError):
+                # This sample failed. Switch subsequent samples to individual
+                # requests without giving the failed sample extra chances.
+                individual = True
+            for p in proxies:
+                samples[p["name"]].append(passed.get(p["name"]))
+            self.progress(units=len(proxies), phase="连通性采样")
+        self.connection_samples = {
+            name: {"connectivity_attempts": len(values),
+                   "connectivity_successes": sum(v is not None for v in values),
+                   "connectivity_required": required, "connectivity_samples_ms": values}
+            for name, values in samples.items()}
+        return {name: round(statistics.median([v for v in values if v is not None]))
+                for name, values in samples.items()
+                if len(values) == rounds and sum(v is not None for v in values) >= required}
+
+    def _batch_once(self, proxies, url, timeout):
+        r = httpx.get(self._controller(f"/group/{SELECTOR_GROUP}/delay"),
+                      headers={"Authorization": f"Bearer {self.controller_secret}"},
+                      params={"url": url, "timeout": timeout, "expected": "200-299"}, timeout=timeout / 1000 + 20, trust_env=False)
+        if r.status_code == 504:
+            return {}  # controller explicitly reports no node passed
+        r.raise_for_status()
+        data = r.json()
+        http_ok = self.confirm_http_success(url, [p["name"] for p in proxies])
+        return {p["name"]: data[p["name"]] for p in proxies
+                if p["name"] in http_ok and type(data.get(p["name"])) is int and data[p["name"]] > 0}
 
     def check_one(self, proxy, attempts=2, timeout=10):
         """Only the score lookup. A failure here never changes connected=True."""
@@ -342,6 +361,7 @@ class MihomoChecker:
     def _check_shard(self, shard, worker_id, front=None):
         checker = MihomoChecker(self.cfg, worker_id=worker_id)
         checker.check_front = front
+        checker.progress = self.progress
         if not checker.start(shard):
             raise RuntimeError(f"检测内核 worker {worker_id} 启动失败，请检查端口和内核日志")
         results = {}
@@ -356,14 +376,17 @@ class MihomoChecker:
                     raise RuntimeError("检测内核在本轮中途退出")
                 connected = p["name"] in passed
                 rec = {"connected": connected, "delay_ms": passed.get(p["name"]),
-                       "connectivity_attempts": DELAY_ROUNDS, "measured": False, "score": None, "attempts": 0}
+                       "measured": False, "score": None, "attempts": 0}
+                if isinstance(checker.connection_samples, dict):
+                    rec.update(checker.connection_samples.get(p["name"], {}))
                 if front is not None:
                     rec["front_key"] = dedup_key(front)
                 if connected:
                     rec.update(checker.check_one(p))
                 else:
-                    rec["connectivity_error"] = "两轮 HTTP 连通性测试均未通过"
+                    rec["connectivity_error"] = f"连通性 {rec.get('connectivity_successes', 0)}/{rec.get('connectivity_attempts', 0)} 次通过，未达到严格多数"
                 results[dedup_key(p)] = rec
+                self.progress(units=1, phase="纯净度检测")
             log.info("worker %d: scoring complete, measured %d/%d", worker_id,
                      sum(bool(rec.get("measured")) for rec in results.values()), len(passed))
             return results
@@ -386,6 +409,8 @@ class MihomoChecker:
         return results
 
     def check_all(self, proxies):
+        units = int(self.cfg.data.get("connectivity_rounds", 3)) + 1
+        self.progress(total=len(proxies) * units, phase="检测普通节点")
         direct = [p for p in proxies if not is_backend(p) or is_udp(p)]
         backends = [p for p in proxies if is_backend(p) and not is_udp(p)]
         results = self._run_stage(direct)
@@ -399,12 +424,14 @@ class MihomoChecker:
                                        results[dedup_key(p)].get("delay_ms", 10**9)))
         candidates = diversify_fronts(candidates, results)
         self.summary = {"front_candidates": [p["name"] for p in candidates],
+                        "connectivity_rounds": self.cfg.data.get("connectivity_rounds", 3),
                         "connectivity_url": self.cfg.data.get("connectivity_url") or DELAY_URL,
                         "connectivity_timeout_ms": self.cfg.data.get("connectivity_timeout_ms", 10000)}
         pending = backends
-        for front in candidates:
+        for index, front in enumerate(candidates):
             if not pending:
                 break
+            self.progress(add_total=len(pending) * units if index else 0, phase="检测静态节点链路")
             checked = self._run_stage(pending, front)
             results.update(checked)
             pending = [p for p in pending if not checked[dedup_key(p)].get("connected")]

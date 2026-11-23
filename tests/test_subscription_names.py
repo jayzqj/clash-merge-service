@@ -48,6 +48,34 @@ class SubscriptionNameTests(unittest.TestCase):
         self.assertEqual([s["name"] for s in stored[1:]], ["", "主用机场"])
         self.assertEqual(self.client.get("/api/config").json()["subscriptions"], stored)
 
+    def test_add_share_links_and_save_stability_settings_without_run(self):
+        response = self.client.post('/api/subscriptions', json={'url': 'vless://fixture@192.0.2.1:443?security=none#sample'})
+        self.assertEqual(response.status_code, 200)
+        self.start.reset_mock()
+        self.cfg.data['notify_enabled'] = False
+        response = self.client.put('/api/config', json={'run_now':False, 'connectivity_rounds':5, 'excluded_protocols':['vless','vmess']})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.start.assert_not_called()
+        stored = Config.load(self.cfg.path)
+        self.assertEqual(stored.data['connectivity_rounds'], 5)
+        self.assertEqual(stored.data['excluded_protocols'], ['vless','vmess'])
+        response = self.client.patch('/api/subscriptions/legacy', json={'url':'vmess://invalid-secret'})
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn('invalid-secret', response.text)
+
+    def test_summary_does_not_serialize_large_node_lists(self):
+        self.state.last_run = {'ok':True, 'proxies_out':12, 'connectivity_samples':[{'name':'large'}]*5000,
+            'prefilter_excluded_names':['large']*5000, 'tested_chains':[{'node':'a','front':'b'}]*10,
+            'sources_failed':[{'url':'private-link', 'id':'fixture', 'error':'timeout'}]}
+        response = self.client.get('/api/status?summary=true')
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(len(response.content), 2000)
+        last = response.json()['last_run']
+        self.assertNotIn('connectivity_samples',last)
+        self.assertNotIn('prefilter_excluded_names',last)
+        self.assertEqual(last['tested_chains_count'],10)
+        self.assertNotIn('private-link',response.text)
+
     def test_rename_and_clear_without_changing_schedule_or_inputs(self):
         original = self.cfg.subscriptions[0].copy()
         for value in ("  <img src=x onerror=alert(1)>机场  ", " " * 3):

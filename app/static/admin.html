@@ -119,7 +119,9 @@ details.note[open] summary{margin-bottom:4px}
 .box-head,th{position:sticky;top:0;z-index:1;background:var(--thead);color:var(--ink-3);font-size:12px;font-weight:600;
   text-align:left;padding:8px 10px;white-space:nowrap;box-shadow:0 1px 0 var(--line)}
 .code{margin:0;font:12px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 12px;color:var(--ink-3)}
-#lastRun{flex:1 1 220px;min-height:0;max-height:none}
+#excludedProtocols{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:6px}
+#excludedProtocols .opt{padding:8px;min-width:0}
+.stack{align-self:start}
 .j-key{color:var(--accent-hi)}.j-str{color:#c9d6ea}.j-num{color:#b9a8ff}.j-lit{color:#f0a8d0}
 
 /* ---- tables ---- */
@@ -254,12 +256,12 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
 
 <section class="kpis" aria-label="概览">
   <div class="kpi"><div class="kpi-label">下次执行</div><div class="kpi-value" id="kNext">—</div><div class="kpi-sub" id="kNextSub"></div></div>
-  <div class="kpi"><div class="kpi-label">上轮发布节点</div><div class="kpi-value" id="kOut">—</div><div class="kpi-sub" id="kOutSub"></div></div>
+  <div class="kpi"><div class="kpi-label">本轮返回普通节点（不含静态）</div><div class="kpi-value" id="kOut">—</div><div class="kpi-sub" id="kOutSub"></div></div>
+  <div class="kpi"><div class="kpi-label">本轮返回静态节点</div><div class="kpi-value" id="kStatic">—</div><div class="kpi-sub" id="kStaticSub"></div></div>
   <div class="kpi"><div class="kpi-label">纯净度已测</div><div class="kpi-value" id="kPure">—</div>
     <div class="meter" id="kPureMeter" role="img" hidden><i id="kPureBar"></i></div><div class="kpi-sub" id="kPureSub"></div></div>
-  <div class="kpi"><div class="kpi-label">当前不输出</div><div class="kpi-value" id="kOmit">—</div><div class="kpi-sub" id="kOmitSub"></div></div>
   <div class="kpi"><div class="kpi-label">订阅源（成功 / 总数）</div><div class="kpi-value" id="kSrc">—</div><div class="kpi-sub" id="kSrcSub"></div></div>
-  <div class="kpi"><div class="kpi-label">上轮用时</div><div class="kpi-value" id="kDur">—</div><div class="kpi-sub" id="kDurSub"></div></div>
+  <div class="kpi"><div class="kpi-label">本轮已用时 / 预计总用时</div><div class="kpi-value" id="kDur">—</div><div class="kpi-sub" id="kDurSub"></div></div>
 </section>
 
 <main class="grid">
@@ -293,7 +295,7 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
   <div class="ph"><span class="tag">02 SOURCES</span><h2>订阅源</h2><span class="meta" id="subCount"></span></div>
   <div class="pb">
     <div class="scroll" role="region" aria-label="订阅源列表" tabindex="0">
-      <table id="subsTable"><thead><tr><th>名称 / ID</th><th>地址（完整显示，含 token）</th><th>状态</th><th>操作</th></tr></thead>
+      <table id="subsTable"><thead><tr><th>名称 / ID</th><th>来源摘要</th><th>状态</th><th>操作</th></tr></thead>
       <tbody id="subs"></tbody></table>
     </div>
     <div id="nameEditor" class="readout" hidden>
@@ -311,9 +313,10 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
       <input type="text" id="newName" maxlength="100" placeholder="例如：主用机场、备用订阅" autocomplete="off">
     </div>
     <div class="f">
-      <label for="newUrl">新增订阅 URL（必填）</label>
-      <div class="add-row"><input type="text" id="newUrl" placeholder="https://…" autocomplete="off" spellcheck="false">
+      <label for="newUrl">新增订阅地址或单节点链接（必填）</label>
+      <div class="add-row"><textarea id="newUrl" rows="3" placeholder="https://… 或 vless://…|vmess://…" autocomplete="off" spellcheck="false"></textarea>
       <button type="button" class="btn" id="btnAddSub">新增并立即执行</button></div>
+      <small>支持常见协议分享链接，多个用 | 或换行分隔；也可粘贴 Clash YAML/JSON 单节点、节点数组或 proxies 配置，覆盖当前内核支持的全部协议并保留完整参数。全部在本机解析并执行相同检测。</small>
     </div>
     <div id="subMsg" class="msg" aria-live="polite"></div>
   </div>
@@ -342,13 +345,15 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
     <p class="hint">每轮必须通过连通性测试才返回，失败立即排除。评分接口故障只影响分数；已连通但未测到分数的节点仍按纯净度过滤设置处理。后置 TCP 节点自动挑选本轮可用前置，输出固定为实际测通的链路。</p>
     <div class="fields">
       <div class="f"><label for="connectivityUrl">连通性测试 URL</label><input type="text" id="connectivityUrl" spellcheck="false"><small>可与 Clash Verge 的延迟测试地址保持一致</small></div>
-      <div class="f"><label for="connectivityTimeout">每次连通性测试超时（毫秒）</label><input type="number" id="connectivityTimeout" min="1000" max="30000"><small>最多测试两轮，任一轮通过即算连通</small></div>
+      <div class="f"><label for="connectivityTimeout">每次连通性测试超时（毫秒）</label><input type="number" id="connectivityTimeout" min="1000" max="30000"></div>
+      <div class="f"><label for="connectivityRounds">每个节点连续检测次数</label><select id="connectivityRounds"><option value="3">3 次，至少通过 2 次</option><option value="5">5 次，至少通过 3 次</option></select><small>全部采样完成后按严格多数判定；同一静态节点在同一前置链路上计数。两次采样至少间隔 0.5 秒。</small></div>
+      <div class="f wide"><label>排除以下协议（可多选）</label><div id="excludedProtocols" class="opts"></div><small>勾选的协议不检测、不返回。列表包含常用协议和本轮订阅实际发现的协议；未勾选表示允许。</small></div>
     </div>
     <div class="opts">
       <label class="opt"><input type="checkbox" role="switch" id="purity"><span class="opt-body"><span class="opt-title">启用纯净度检测</span>
         <span class="opt-desc">本轮未测到分数时沿用历史分数；关闭此项仍检测连通性</span></span></label>
       <label class="opt"><input type="checkbox" role="switch" id="delayScreen"><span class="opt-body"><span class="opt-title">检测前先做延迟筛选</span>
-        <span class="opt-desc">开启时批量测试连通性，关闭时逐个测试；两种模式都排除本轮未通过的节点</span></span></label>
+        <span class="opt-desc">开启时使用内核批量并发，关闭时使用受限线程池逐节点请求；两种模式都按多数通过判定</span></span></label>
     </div>
     <label class="opt"><input type="checkbox" role="switch" id="purityFilter" aria-controls="purityThresholdField"><span class="opt-body"><span class="opt-title">纯净度过滤</span>
       <span class="opt-desc">先通过本轮连通性，再比较本轮或历史分数。仅返回分数不高于预留值的节点，没有任何分数的不返回</span></span></label>
@@ -390,19 +395,17 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
 </section>
 
 <div class="stack span-5">
-  <section class="panel grow">
+  <section class="panel">
     <div class="ph"><span class="tag">04 REPORT</span><h2>上次执行结果</h2></div>
     <div class="pb">
       <div id="runSummary"><div class="empty">加载中…</div></div>
-      <h3>原始报告 JSON</h3>
-      <pre class="code scroll" id="lastRun" role="region" aria-label="原始报告 JSON" tabindex="0">—</pre>
     </div>
   </section>
   <section class="panel">
     <div class="ph"><span class="tag">05 FAILED</span><h2>末轮失败的订阅源</h2><span class="meta" id="failedCount"></span></div>
     <div class="pb">
       <div class="scroll pad short" id="failedSubs" role="region" aria-label="末轮失败的订阅源" tabindex="0">—</div>
-      <details class="note"><summary>说明</summary>最近一轮执行中拉取失败的订阅地址（已跳过，用其余源继续跑）。地址完整显示，含 token，仅登录后可见；企业微信通知里只显示成功/总数，不含地址。</details>
+      <details class="note"><summary>说明</summary>仅显示最近一轮失败的订阅源与简短原因，最多显示 10 条。</details>
     </div>
   </section>
 </div>
@@ -412,32 +415,16 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
   <div class="pb">
     <div class="split"><p class="hint">exclude_remarks：名字里出现这些词的节点，在测试之前就被排除，不参与检测。（ini 内容服务端缓存 5 分钟）</p>
       <button type="button" class="btn sm" id="btnIni">重新读取 ini</button></div>
-    <div class="cols">
+    <div class="cols" style="grid-template-columns:1fr">
       <div class="scroll" role="region" aria-label="排除关键词" tabindex="0">
         <div class="box-head" id="exHead">排除关键词</div>
         <div class="chips pad" id="excludeText">加载中…</div>
-      </div>
-      <div class="scroll" role="region" aria-label="上轮被过滤的节点" tabindex="0">
-        <table><thead><tr><th id="excludedHead">上轮被过滤的节点</th></tr></thead>
-        <tbody id="excludedNames"></tbody></table>
       </div>
     </div>
   </div>
 </section>
 
-<section class="panel span-6">
-  <div class="ph"><span class="tag">07 HEALTH</span><h2>节点可用性记录</h2></div>
-  <div class="pb">
-    <div class="split"><div id="availText" class="hint">加载中…</div>
-      <button type="button" class="btn sm danger" id="btnClearAvail">清空记录</button></div>
-    <div class="scroll" role="region" aria-label="当前不输出的节点" tabindex="0">
-      <table><thead><tr><th>当前不输出的节点</th><th>连续失败</th><th>最后检测</th></tr></thead>
-      <tbody id="omitted"></tbody></table>
-    </div>
-    <div id="availMsg" class="msg" aria-live="polite"></div>
-    <details class="note push"><summary>说明</summary>本轮连通性未通过的节点立即不返回，下轮仍会重新测试；评分失败不记为连通性失败。这里的历史计数仅用于查看，清空记录不能跳过下轮连通性验证。</details>
-  </div>
-</section>
+
 
 </main>
 </div>
@@ -526,6 +513,13 @@ function updatePurityFilter(){
   $('purityFilter').setAttribute('aria-expanded', String(enabled));
 }
 function fillForm(c){
+  $('connectivityRounds').value = c.connectivity_rounds||3;
+  const protocols = (c.available_protocols||[]).map(name => {
+    const label = el('label', 'opt'), input = document.createElement('input');
+    input.type = 'checkbox'; input.value = name; input.checked = (c.excluded_protocols||[]).includes(name);
+    label.append(input, el('span', null, name)); return label;
+  });
+  $('excludedProtocols').replaceChildren(...protocols);
   $('connectivityUrl').value = c.connectivity_url||'https://cp.cloudflare.com/generate_204';
   $('connectivityTimeout').value = c.connectivity_timeout_ms||10000;
   $('fetchFallback').checked = c.fetch_direct_fallback !== false;
@@ -587,8 +581,10 @@ function renderStatus(s, lr){
   $('kNextSub').textContent = [nr[0], untilText(s.next_run, s.running)].filter(Boolean).join(' · ');
 
   const reapplied = lr.kind === 'reapply';
-  $('kOut').textContent = num(lr.proxies_out);
-  $('kOutSub').textContent =
+  $('kOut').textContent = lr.ok ? num(lr.ordinary_nodes_out ?? (lr.proxies_out === undefined ? undefined : lr.proxies_out-(lr.backend_total||0))) : '—';
+  $('kStatic').textContent = lr.ok ? num(lr.static_nodes_out ?? lr.backend_total) : '—';
+  $('kStaticSub').textContent = s.running ? '本轮检测中，暂显示上轮已发布结果' : lr.ok ? '与普通节点分开统计' : '本轮未发布新结果';
+  $('kOutSub').textContent = s.running ? '本轮检测中，暂显示上轮已发布结果' :
     (lr.started_at && lr.ok === false) ? '上轮失败，沿用上一次的文件' :
     lr.total_in !== undefined ? ('合并 '+lr.total_in+' · 去重 '+num(lr.dedup_removed)+' · 过滤 '+num(lr.prefilter_excluded)) :
     reapplied ? '来自重新应用规则' : '';
@@ -609,8 +605,10 @@ function renderStatus(s, lr){
   $('kSrcSub').textContent = f === undefined ? (reapplied ? '重新应用规则不拉取订阅' : '') :
     f.length ? ('失败 '+f.length+' 个'+(lr.ok ? '，已跳过' : '')) : '全部成功';
 
-  setDuration($('kDur'), lr.duration_seconds);
-  $('kDurSub').textContent = lr.finished_at ? ('结束于 '+lr.finished_at) : '';
+  const live = s.running && s.current_run;
+  const mins = value => value == null ? '估算中' : (value/60).toFixed(1)+' 分';
+  $('kDur').textContent = live ? mins(live.elapsed_seconds)+' / '+mins(live.estimated_total_seconds) : mins(lr.duration_seconds);
+  $('kDurSub').textContent = live ? live.phase+' · '+live.estimate_basis : lr.finished_at ? ('已完成 · '+lr.finished_at) : '';
 }
 
 function renderRun(lr){
@@ -624,15 +622,18 @@ function renderRun(lr){
   const rows = [];
   if(!lr.ok) rows.push(kv('失败步骤', lr.failed_step||'—', 'err'), kv('原因', lr.error||'—', 'err'));
   rows.push(kv('开始', lr.started_at));
-  if(has('duration_seconds')) rows.push(kv('用时', lr.duration_seconds+' 秒'));
+  if(has('duration_seconds')) rows.push(kv('本轮用时', (lr.duration_seconds/60).toFixed(2)+' 分钟'));
+  if(has('ordinary_nodes_out')) rows.push(kv('本轮返回', '普通 '+lr.ordinary_nodes_out+' 个 · 静态 '+lr.static_nodes_out+' 个'));
+  if(has('protocol_excluded')) rows.push(kv('协议过滤', '排除 '+lr.protocol_excluded+' 个 · '+((lr.excluded_protocols||[]).join('、')||'未排除任何协议')));
+  if(has('connectivity_rounds')) rows.push(kv('连通性规则', '每条链路 '+lr.connectivity_rounds+' 次，至少通过 '+(Math.floor(lr.connectivity_rounds/2)+1)+' 次'));
   if(has('groups')) rows.push(kv('分组 / 规则', lr.groups+' 个分组 · '+num(lr.rules)+' 条规则 · '+num(lr.rule_providers)+' 个规则集'));
   if(has('low_purity_group')) rows.push(kv('优选分组', lr.low_purity_group+' · '+num(lr.low_purity_members)+' 个节点'));
   if(has('connectivity_passed')) rows.push(kv('本轮连通性', '通过 '+lr.connectivity_passed+' / '+lr.connectivity_total+' 个 · 排除 '+lr.connectivity_excluded+' 个'));
   if(!has('connectivity_passed') && lr.kind !== 'reapply') rows.push(kv('连通性记录', '旧版本结果未单独验证连通性，请完成新版检测后更新订阅', 'err'));
   if(has('purity_unscored_connected')) rows.push(kv('连通但未取得评分', lr.purity_unscored_connected+' 个（不影响连通性判定）'));
-  if(lr.source_routes) rows.push(kv('订阅下载链路', lr.source_routes.map(s => (s.id||'订阅')+'：'+({'proxy':'代理','direct':'直连','direct-fallback':'代理失败后直连','failed':'失败'}[s.route]||s.route)).join('；')));
-  if(lr.front_candidates) rows.push(kv('自动前置候选', lr.front_candidates.join('、')||'没有可用候选'));
-  if(lr.tested_chains) rows.push(kv('已固定检测链路', lr.tested_chains.length+' 个后置节点，具体前置见下方报告'));
+  if(lr.source_routes) rows.push(kv('订阅下载链路', lr.source_routes.map(s => (s.id||'订阅')+'：'+({'proxy':'代理','direct':'直连','direct-fallback':'代理失败后直连','failed':'失败','local':'本机解析节点链接'}[s.route]||s.route)).join('；')));
+  if(has('front_candidates_count')) rows.push(kv('自动前置候选', lr.front_candidates_count+' 个'));
+  if(has('tested_chains_count')) rows.push(kv('已固定检测链路', lr.tested_chains_count+' 个后置节点'));
   if(has('purity_reused')) rows.push(kv('沿用历史分数', lr.purity_reused+' 个（已通过本轮连通性，评分失败不计连通失败）'));
   if(has('purity_filter_enabled')) rows.push(kv('纯净度过滤', lr.purity_filter_enabled ? ('≤'+lr.purity_threshold+'% · 保留 '+lr.purity_filter_kept+' 个 · 排除 '+lr.purity_filter_excluded+' 个') : '关闭'));
   if(has('availability_omitted')) rows.push(kv('本轮未通过而隐藏', lr.availability_omitted+' 个'));
@@ -641,34 +642,15 @@ function renderRun(lr){
   box.replaceChildren(head, ...rows);
 }
 
-// Colour the report JSON token by token. Every token goes in as a text
-// node or a span with textContent, so nothing in the report is ever
-// parsed as HTML.
-const JSON_TOKEN = /"(?:\\.|[^"\\])*"|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
-function renderJson(target, value){
-  if(value === undefined || value === null){ target.textContent = '—'; return; }
-  const text = JSON.stringify(value, null, 2), frag = document.createDocumentFragment();
-  let last = 0;
-  for(const m of text.matchAll(JSON_TOKEN)){
-    const t = m[0], end = m.index + t.length;
-    if(m.index > last) frag.append(text.slice(last, m.index));
-    const cls = t[0] === '"' ? (text[end] === ':' ? 'j-key' : 'j-str') : (/^[-\d]/.test(t) ? 'j-num' : 'j-lit');
-    frag.append(el('span', cls, t));
-    last = end;
-  }
-  frag.append(text.slice(last));
-  target.replaceChildren(frag);
-}
-
 function renderFailed(lr){
   const box = $('failedSubs'), f = lr.sources_failed;
-  $('failedCount').textContent = (lr.started_at && f) ? (f.length+' 个') : '';
+  $('failedCount').textContent = (lr.started_at && f) ? ((lr.sources_failed_count ?? f.length)+' 个') : '';
   if(!lr.started_at){ box.replaceChildren(el('div', 'empty', '—')); return; }
   if(f === undefined){ box.replaceChildren(el('div', 'empty', lr.kind === 'reapply' ?
     '本轮未拉取订阅源（重新应用规则不拉取订阅）。' : '本轮没有订阅源拉取明细，请查看执行结果。')); return; }
   if(!f.length){ box.replaceChildren(el('div', 'empty', '末轮没有失败的订阅源。')); return; }
   box.replaceChildren(el('div', 'hint', '时间：'+(lr.finished_at||lr.started_at)), ...f.map(x => {
-    const d = el('div', 'fail'); d.append(kv('地址', x.url, 'mono'), kv('原因', x.error, 'err')); return d; }));
+    const d = el('div', 'fail'); d.append(kv('订阅源', x.source||'订阅源'), kv('原因', x.error, 'err')); return d; }));
 }
 
 function renderConfig(c){
@@ -713,31 +695,19 @@ function renderConfig(c){
   }) : [emptyRow('还没有订阅源。', 4)]);
 }
 
-function renderAvailability(a){
-  const om = a.omitted||[];
-  $('availText').textContent = '已记录节点：'+a.tracked+' 个，其中当前不输出：'+om.length+' 个';
-  $('kOmit').textContent = String(om.length);
-  $('kOmitSub').textContent = '已记录 '+a.tracked+' 个节点';
-  fillRows($('omitted'), om.length ?
-    om.map(o => row(cell(o.name), cell(o.fails, 'num'), cell(o.last_seen||'', 'mono when'))) :
-    [emptyRow('当前没有被隐藏的节点。', 3)]);
-}
-
 async function refresh(forceForm){
-  const s = await api('/api/status');
+  const s = await api('/api/status?summary=true');
   const lr = s.last_run || {};
   renderStatus(s, lr);
-  if(changed('run', s.last_run)){ renderRun(lr); renderJson($('lastRun'), s.last_run); renderFailed(lr); }
+  if(changed('run', s.last_run)){ renderRun(lr); renderFailed(lr); }
 
-  const c = await api('/api/config');
+  const c = await api('/api/config?summary=true');
   // Only overwrite the settings form on first load / explicit reload /
   // after a save — the 30 s auto-refresh must not wipe what the user
   // is typing.
-  if(!formLoaded || forceForm) fillForm(c);
+  if(!formLoaded || forceForm || pendingFormReload){ fillForm(c); pendingFormReload = false; }
   renderConfig(c);
 
-  const a = await api('/api/availability');
-  if(changed('avail', a)) renderAvailability(a);
 
   // The exclude list only changes when a round finishes or the ini
   // changes: reload it then, not on every 30 s tick.
@@ -752,7 +722,11 @@ async function refresh(forceForm){
 
 // refresh() plus the "updated at" stamp. A failed poll shows up in the
 // top bar instead of an unhandled rejection. Returns whether it worked.
+let refreshing = false, pendingFormReload = false;
 async function tick(forceForm){
+  if(forceForm) pendingFormReload = true;
+  if(refreshing) return false;
+  refreshing = true;
   try{
     await refresh(forceForm);
     $('refreshedAt').textContent = '更新于 '+clock();
@@ -763,7 +737,7 @@ async function tick(forceForm){
     $('refreshedAt').textContent = e.message;
     $('refreshedAt').title = e.message;
     return false;
-  }
+  }finally{ refreshing = false; }
 }
 
 function renderExclude(text){
@@ -783,18 +757,12 @@ async function loadIni(force){
     $('exHead').textContent = '排除关键词';
     $('excludeText').className = 'chips pad err';
     $('excludeText').textContent = '获取 ini 失败：'+msg;
-    $('excludedHead').textContent = '上轮被过滤的节点';
-    fillRows($('excludedNames'), [emptyRow('读取失败，暂时无法获取节点列表。', 1)]);
     $('iniStamp').textContent = '';
   };
   try{
-    const ini = await api('/api/ini'+(force?'?refresh=1':''));
+    const ini = await api('/api/ini?summary=true'+(force?'&refresh=1':''));
     if(!ini.ok){ fail(ini.error||''); return; }
     renderExclude(ini.exclude_remarks);
-    const names = ini.prefilter_excluded_names||[];
-    $('excludedHead').textContent = '上轮被过滤的节点（'+names.length+' 个）';
-    fillRows($('excludedNames'), names.length ? names.map(n => row(cell(n))) :
-      [emptyRow('上轮没有过滤掉节点（'+(ini.prefilter_excluded||0)+' 个）', 1)]);
     $('iniStamp').textContent = '读取于 '+clock();
   }catch(e){ fail(e.message); }
 }
@@ -804,10 +772,6 @@ function startedMsg(r, what){
   return r.run_started ? (what+'，正在执行一轮。') : (what+'。'+(r.note||'当前已有一轮在执行，改动从下一轮生效。'));
 }
 
-async function clearAvail(){ if(!confirm('清空全部可用性记录？当前不输出的节点将在下一轮重新开始计数。')) return;
-  try{ const r = await api('/api/availability/clear',{method:'POST'});
-    say($('availMsg'), '已清空 '+r.cleared+' 条记录。', 'ok'); tick();
-  }catch(e){ say($('availMsg'), '失败：'+e.message, 'bad'); } }
 async function addSub(){
   const url = $('newUrl').value.trim();
   const name = $('newName').value.trim();
@@ -871,6 +835,8 @@ async function saveSettings(runNow = true){
   const body = {run_now: runNow, interval_seconds: parseInt($('interval').value,10),
     connectivity_url: $('connectivityUrl').value.trim(),
     connectivity_timeout_ms: parseInt($('connectivityTimeout').value,10),
+    connectivity_rounds: parseInt($('connectivityRounds').value,10),
+    excluded_protocols: Array.from($('excludedProtocols').querySelectorAll('input:checked'), input => input.value),
     fetch_direct_fallback: $('fetchFallback').checked,
     execution_start: $('executionStart').value,
     execution_end: $('executionEnd').value,
@@ -916,7 +882,7 @@ async function reapply(){ const m = $('reapplyMsg');
   try{ const r = await api('/api/reapply',{method:'POST'});
     if(!r.ok){ say(m, '未启动：'+(r.error||''), 'bad'); return; }
     for(let i=0;i<20;i++){ await new Promise(res=>setTimeout(res,1000));
-      const s = await api('/api/status');
+      const s = await api('/api/status?summary=true');
       if(!s.running){ const lr = s.last_run||{};
         if(lr.ok) say(m, '已应用：'+num(lr.proxies_out)+' 个节点，低纯净分组 '+(lr.low_purity_members||0)+' 个，用时 '+num(lr.duration_seconds)+' 秒。', 'ok');
         else say(m, '失败（'+(lr.failed_step||'')+'）：'+(lr.error||''), 'bad');
@@ -952,7 +918,6 @@ guard($('btnSaveOnly'), () => saveSettings(false));
 $('purityFilter').addEventListener('change', updatePurityFilter);
 guard($('btnReload'), reloadForm);
 guard($('btnIni'), () => loadIni(true));
-guard($('btnClearAvail'), clearAvail);
 guard($('btnCopy'), copyUrl);
 guard($('btnUseRecommended'), () => {
   if(recommendedWorkers !== null){

@@ -60,6 +60,8 @@ DEFAULTS: dict = {
     "fetch_direct_fallback": True,
     "connectivity_url": "https://cp.cloudflare.com/generate_204",
     "connectivity_timeout_ms": 10000,
+    "connectivity_rounds": 3,
+    "excluded_protocols": [],
 }
 
 # The dialer-proxy target group name — FALLBACK only. The ini
@@ -225,8 +227,12 @@ class Config:
             url = (s.get("url") or "").strip()
             if not url:
                 errors.append(f"subscription {s.get('id', '?')}: empty URL")
-            elif not re.match(r"^https?://\S+$", url):
-                errors.append(f"subscription {s.get('id', '?')}: not an http(s) URL")
+            else:
+                from app.node_links import validate_source
+                try:
+                    validate_source(url)
+                except ValueError as exc:
+                    errors.append(f"subscription {s.get('id', '?')}: {exc}")
         if self.notify_enabled and not self.wechat_webhook:
             errors.append("notify_enabled is on but wechat_webhook is empty")
         if not self.ini_url.startswith("https://"):
@@ -237,6 +243,12 @@ class Config:
         if not re.fullmatch(r"https?://\S+", str(self.data.get("connectivity_url", ""))):
             errors.append("连通性测试地址须为 http:// 或 https:// 地址")
         timeout = self.data.get("connectivity_timeout_ms", 10000)
+        rounds = self.data.get("connectivity_rounds", 3)
+        if type(rounds) is not int or rounds not in (3, 5):
+            errors.append("连通性检测次数须为 3 或 5")
+        protocols = self.data.get("excluded_protocols", [])
+        if not isinstance(protocols, list) or any(not isinstance(p, str) or not re.fullmatch(r"[a-z0-9-]{1,32}", p) for p in protocols):
+            errors.append("排除协议须为协议名称列表")
         if type(timeout) is not int or not 1000 <= timeout <= 30000:
             errors.append("连通性超时必须为 1000–30000 毫秒")
         if proxy and not re.fullmatch(r"https?://\S+", proxy):

@@ -229,6 +229,7 @@ def parse_ini(text: str) -> IniData:
 
 _SCORE_PREFIX = re.compile(r"^\d+% ")
 _DUP_SUFFIX = re.compile(r" \(\d+\)$")
+_IPV4_SUFFIX = re.compile(r"\s+\d+\.\d+\.\d+\.\d+$")
 
 
 def exclude_match_name(name: str) -> str:
@@ -254,7 +255,7 @@ def apply_exclude(proxies: list[dict], ini: IniData,
     if name_of is None:
         def name_of(p):
             return exclude_match_name(str(p.get("name", "")))
-    kept = [p for p in proxies if not rx.search(name_of(p))]
+    kept = [p for p in proxies if not (rx.search(name_of(p)) or rx.search(_IPV4_SUFFIX.sub('', name_of(p))))]
     return kept, len(proxies) - len(kept)
 
 
@@ -268,7 +269,7 @@ def _matching_nodes(proxies: list[dict], regexes: list[str]) -> list[str]:
             continue
         for p in proxies:
             name = str(p.get("name", ""))
-            if name not in out and rx.search(name):
+            if name not in out and (rx.search(name) or rx.search(_IPV4_SUFFIX.sub('', name))):
                 out.append(name)
     return out
 

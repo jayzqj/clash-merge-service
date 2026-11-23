@@ -27,7 +27,7 @@ from app.config import FRONT_GROUP
 
 log = logging.getLogger(__name__)
 
-UDP_TYPES = {"hysteria2", "tuic", "wireguard"}
+UDP_TYPES = {"hysteria", "hysteria2", "tuic", "wireguard"}
 
 
 def front_group_from_ini(ini) -> str:
@@ -52,7 +52,8 @@ def is_backend(proxy: dict) -> bool:
 
 
 def is_udp(proxy: dict) -> bool:
-    return str(proxy.get("type", "")).lower() in UDP_TYPES
+    return (str(proxy.get("type", "")).lower() in UDP_TYPES
+            or (proxy.get('type') == 'mieru' and str(proxy.get('transport', '')).upper() == 'UDP'))
 
 
 def inject_dialer(proxies: list[dict], front_group: str = FRONT_GROUP) -> dict:

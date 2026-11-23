@@ -73,6 +73,9 @@ from app.purity_history import apply_history, filter_by_purity
 from app.schedule import in_execution_window, next_execution, normalize_next_run
 from app.processes import run_process, STOPPING
 from app.runtime import subscription_url
+from app.progress import RunProgress
+from app.output_names import append_ipv4_names
+from app.dialer import is_backend
 
 log = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
@@ -111,10 +114,12 @@ class ServiceState:
     last_error: str = ""
     runs_started: int = 0
     runs_skipped_overlap: int = 0
+    progress: RunProgress | None = None
 
     def status(self) -> dict:
         return {
             "running": self.running,
+            "current_run": self.progress.snapshot() if self.running and self.progress else None,
             "last_run": self.last_run,
             "next_run": self.next_run,
             "last_error": self.last_error,
@@ -172,7 +177,7 @@ def _guard_output(cfg: Config, doc: dict, report: dict) -> None:
     prev = _published_proxy_count(Path(cfg.output_path))
     report["guard_previous_proxies"] = prev
     intentional = (report.get("connectivity_excluded", 0) + report.get("chain_dependency_excluded", 0)
-                   + report.get("purity_filter_excluded", 0))
+                   + report.get("purity_filter_excluded", 0) + report.get("protocol_excluded", 0))
     empty_by_filter = intentional > 0 and new == 0
     if new == 0 and not empty_by_filter:
         raise FetchError("guard", "new output has 0 proxies, not publishing")
@@ -269,6 +274,8 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
     started = time.time()
     report: dict = {"kind": "reapply", "started_at": _now_cst(),
                     "ok": False}
+    state.progress = RunProgress()
+    state.progress.update(phase="重新应用规则")
     step = "load"
     try:
         out_path = Path(cfg.output_path)
@@ -312,6 +319,8 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
         step = "write"
         await _write_output(cfg, doc)
         report["output_path"] = str(out_path)
+        report["static_nodes_out"] = sum(is_backend(p) for p in doc["proxies"])
+        report["ordinary_nodes_out"] = len(doc["proxies"]) - report["static_nodes_out"]
 
         report["ok"] = True
         report["duration_seconds"] = round(time.time() - started, 1)
@@ -355,6 +364,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
     live_cfg = cfg
     cfg = Config(data=copy.deepcopy(cfg.data), path=cfg.path)
     started = time.time()
+    state.progress = RunProgress(state.last_run, cfg.data.get("connectivity_rounds", 3), cfg.purity_workers)
     report: dict = {"started_at": _now_cst(), "ok": False,
                     "purity_filter_enabled": cfg.data.get("purity_filter_enabled", False),
                     "purity_threshold": cfg.data.get("purity_threshold", 15)}
@@ -382,7 +392,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                     # only ever shows the counts, never the address).
                     reason = (res.reason if isinstance(res, FetchError)
                               else f"{type(res).__name__}: {res}"[:300])
-                    failed.append({"url": s["url"], "error": reason})
+                    failed.append({"id": s.get("id"), "name": s.get("name"), "url": s["url"], "error": reason})
                     log.warning("fetch: source %s failed, skipping: %s", s.get("id"), reason)
                     continue
                 fetched.append((s.get("id", "?"), res))
@@ -400,6 +410,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             step = "merge"
             merged, mstats = merge_proxies(fetched)
             report.update(mstats)
+            report["protocols_seen"] = sorted({str(p.get("type", "")).lower() for p in merged})
 
             step = "fetch-ini"
             # Fetch the ini early: its exclude_remarks decides which
@@ -433,9 +444,16 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                 if dedup_key(front) not in {dedup_key(p) for p in to_test}:
                     front["name"] = "自定义检测前置"
                     to_test.append(front)
+            excluded_protocols = set(cfg.data.get("excluded_protocols", []))
+            report["protocols_seen"] = sorted(set(report["protocols_seen"]) | {str(p.get("type", "")).lower() for p in to_test})
+            eligible = [p for p in to_test if str(p.get("type", "")).lower() not in excluded_protocols]
+            report["protocol_excluded"] = len(to_test) - len(eligible)
+            report["excluded_protocols"] = sorted(excluded_protocols)
+            to_test = eligible
             step = "connectivity"
             report["purity_workers"] = cfg.purity_workers
             checker = MihomoChecker(cfg)
+            checker.progress = state.progress.update
             purity = await asyncio.to_thread(checker.check_all, to_test)
             if isinstance(checker.summary, dict):
                 report.update(checker.summary)
@@ -458,6 +476,11 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             report.update(astats)
             kept, connectivity_stats = filter_connected(to_test, purity)
             report.update(connectivity_stats)
+            report["connectivity_samples"] = [{"name": p["name"],
+                "successes": purity[dedup_key(p)].get("connectivity_successes", 0),
+                "attempts": purity[dedup_key(p)].get("connectivity_attempts", 0),
+                "samples_ms": purity[dedup_key(p)].get("connectivity_samples_ms", [])}
+                for p in to_test]
 
             step = "purity-filter"
             kept, filter_stats = filter_by_purity(cfg, kept, purity)
@@ -484,6 +507,7 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
             report.update(nstats)
 
             step = "convert"
+            state.progress.update(phase="生成分组与规则")
             # Remote conversion fetches an external URL rather than ordered.
             # Filtering must consume this round's actual eligible nodes.
             doc, cstats = await converter_mod.convert(ordered, ini_text, client)
@@ -514,6 +538,12 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                     scores_by_name[str(p.get("name", ""))] = int(rec["score"])
             report.update(add_low_purity_group(doc, doc["proxies"],
                                                scores_by_name))
+
+            state.progress.update(phase="补充 IPv4 与校验输出")
+            report.update(await append_ipv4_names(doc, purity))
+            report["tested_chains"] = pin_tested_chains(doc["proxies"], purity)
+            report["static_nodes_out"] = sum(is_backend(p) for p in doc["proxies"])
+            report["ordinary_nodes_out"] = len(doc["proxies"]) - report["static_nodes_out"]
 
             step = "guard"
             _guard_output(cfg, doc, report)

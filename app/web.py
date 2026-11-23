@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from app.config import Config
 from app.pipeline import ServiceState, load_state, reschedule, run_pipeline, scheduler_loop
 from app import runtime
+from app.node_links import validate_source, PROTOCOLS
 
 log = logging.getLogger(__name__)
 security = HTTPBasic(auto_error=False)
@@ -158,13 +159,33 @@ async def admin_page(_user: str = Depends(_check_auth)):
 
 
 @app.get("/api/status")
-async def api_status(_user: str = Depends(_check_auth)):
-    return _state().status()
+async def api_status(summary: bool = False, _user: str = Depends(_check_auth)):
+    status = _state().status()
+    if summary and status.get("last_run"):
+        last = status["last_run"]
+        compact = {key: value for key, value in last.items() if not isinstance(value, (list, dict))}
+        compact["excluded_protocols"] = last.get("excluded_protocols", [])
+        compact["source_routes"] = last.get("source_routes", [])[:30]
+        compact["sources_failed_count"] = len(last.get("sources_failed", []))
+        compact["sources_failed"] = [{"source": item.get("name") or item.get("id") or "订阅源",
+            "error": str(item.get("error", ""))[:250]} for item in last.get("sources_failed", [])[:10]]
+        compact["tested_chains_count"] = len(last.get("tested_chains", []))
+        compact["front_candidates_count"] = len(last.get("front_candidates", []))
+        status["last_run"] = compact
+    return status
 
 
 @app.get("/api/config")
-async def api_get_config(_user: str = Depends(_check_auth)):
+async def api_get_config(summary: bool = False, _user: str = Depends(_check_auth)):
     view = _cfg().public_view()
+    if summary:
+        from app.node_links import is_node_source
+        for source in view.get('subscriptions', []):
+            value = source.get('url', '')
+            source['url'] = '本地节点配置 / 分享链接' if is_node_source(value) else value[:160] + ('…' if len(value)>160 else '')
+    view["available_protocols"] = sorted(set(((_state().last_run or {}).get("protocols_seen", [])))
+        | set(view.get("excluded_protocols", []))
+        | PROTOCOLS)
     view["subscription_url"] = runtime.subscription_url()
     view["desktop"] = {"enabled": runtime.desktop_mode()}
     if runtime.desktop_mode():
@@ -244,6 +265,8 @@ class SettingsIn(BaseModel):
     fetch_direct_fallback: bool | None = None
     connectivity_url: str | None = None
     connectivity_timeout_ms: int | None = None
+    connectivity_rounds: int | None = Field(default=None, strict=True)
+    excluded_protocols: list[str] | None = None
     check_front: dict | None = None
 
 
@@ -313,7 +336,7 @@ async def api_put_config(body: SettingsIn, request: Request,
         data["merged_public_url"] = body.merged_public_url.strip()
     if body.fetch_proxy_url is not None:
         data["fetch_proxy_url"] = body.fetch_proxy_url.strip()
-    for key in ("fetch_direct_fallback", "connectivity_url", "connectivity_timeout_ms"):
+    for key in ("fetch_direct_fallback", "connectivity_url", "connectivity_timeout_ms", "connectivity_rounds", "excluded_protocols"):
         if getattr(body, key) is not None:
             data[key] = getattr(body, key)
     if "check_front" in body.model_fields_set:
@@ -338,9 +361,10 @@ async def api_put_config(body: SettingsIn, request: Request,
 async def api_add_subscription(body: SubscriptionIn,
                                _user: str = Depends(_check_auth)):
     cfg = _cfg()
-    url = body.url.strip()
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(status_code=400, detail="URL must start with http(s)://")
+    try:
+        url = validate_source(body.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     if any(s.get("url") == url for s in cfg.subscriptions):
         raise HTTPException(status_code=400, detail="subscription already exists")
     cfg.data.setdefault("subscriptions", []).append(
@@ -373,9 +397,10 @@ async def api_patch_subscription(sub_id: str, body: SubscriptionPatch,
     if target is None:
         raise HTTPException(status_code=404, detail="subscription not found")
     if body.url:
-        url = body.url.strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
-            raise HTTPException(status_code=400, detail="URL must start with http(s)://")
+        try:
+            url = validate_source(body.url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
         if any(s.get("url") == url and s is not target
                for s in cfg.subscriptions):
             raise HTTPException(status_code=400, detail="subscription already exists")
@@ -419,7 +444,7 @@ async def api_reapply(_user: str = Depends(_check_auth)):
 
 
 @app.get("/api/ini")
-async def api_ini(refresh: bool = False, _user: str = Depends(_check_auth)):
+async def api_ini(refresh: bool = False, summary: bool = False, _user: str = Depends(_check_auth)):
     """The live ini's exclude_remarks (read-only), plus which nodes the
     last run filtered with it. The ini text is cached for 5 minutes
     (``?refresh=1`` bypasses the cache)."""
@@ -444,7 +469,7 @@ async def api_ini(refresh: bool = False, _user: str = Depends(_check_auth)):
             "exclude_remarks": ini.exclude_regex,
             "prefilter_excluded": last.get("prefilter_excluded", 0),
             "prefilter_excluded_names":
-                last.get("prefilter_excluded_names", [])}
+                [] if summary else last.get("prefilter_excluded_names", [])}
 
 
 @app.get("/api/availability")

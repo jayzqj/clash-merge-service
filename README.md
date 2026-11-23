@@ -66,7 +66,7 @@ deploy/
 | `purity_threshold` | 后台「纯净度 预留%」，默认 15；输入 0–100 的数字（支持小数），15 表示保留 ≤15%，包含 15%。保存后下轮完整检测生效；过滤关闭时保留阈值但不使用 |
 | `purity_workers` | 并行检测 worker 数（1–8，默认 1 = 串行）；每个 worker 独占一个 mihomo 实例（端口 base+i、工作目录 `mihomo/worker-i`），节点轮询分片。4 worker 时 409 节点一轮约 10–20 分钟（串行约 60 分钟）。2GB VPS 建议 ≤4，每个实例多占约 30–50MB。管理页可调 |
 | `purity_delay_screen` | 默认开：批量检测连通性；关闭改为逐个检测，失败节点当轮立即排除 |
-| `connectivity_url` / `connectivity_timeout_ms` | 独立于评分接口的 HTTP 连通性目标（默认 Cloudflare generate_204）与超时（默认 10000ms，范围 1000–30000），最多两轮，任一轮通过即算连通 |
+| `connectivity_url` / `connectivity_timeout_ms` | 独立于评分接口的 HTTP 连通性目标（默认 Cloudflare generate_204）与超时（默认 10000ms，范围 1000–30000），默认连续 3 次，至少通过 2 次；可选 5 次，至少通过 3 次 |
 | `fetch_proxy_url` / `fetch_direct_fallback` | 下载代理；默认开启代理失败后直连重试。只影响订阅和规则下载，不改变节点检测链路；报告记录每个源的实际下载路径 |
 | `check_front` / `check_front_enabled` | 可选额外前置候选。后置 TCP 节点始终自动选取本轮已测通的前置，链路失败时最多尝试 8 个不同地区或端点的候选。自定义候选也须检测，通过后按同样规则过滤并输出。最终 dialer-proxy 固定到实测前置节点名 |
 | `mihomo_bin` / `mihomo_workdir` / `mihomo_mixed_port` / `mihomo_controller_port` | 检测用 mihomo 的位置与端口（默认 7890 / 9090，避开 sing-box 已占端口，部署时先核对） |
@@ -100,7 +100,7 @@ webhook 只显示是否已设置；`check_front` 只回显名字、类型、服�
    密码/UUID 相同，只靠 `servername` 与 `ws-opts.path` 区分；反过来，
    共用 server+port 的 hysteria2 节点（洛杉矶 1/2 号、东京 1–3 号）除名字
    外全部字段相同，是同一端点挂了多个名字，按规则应合并为一个。
-3. 先做独立的连通性检测。普通节点从运行设备直连检测；后置 TCP 节点先挑选已测通的前置，验证完整链路。默认 HTTP 测试目标为 Cloudflare generate_204，超时 10 秒，最多两轮；失败的节点本轮立即排除，不等待连续三轮，也不允许历史分数把它保留下来。没有候选前置的后置节点不返回。
+3. 先做独立的连通性检测。普通节点从运行设备直连检测；后置 TCP 节点先挑选已测通的前置，验证完整链路。默认 HTTP 测试目标为 Cloudflare generate_204，超时 10 秒，默认连续 3 次、至少通过 2 次（可选 5 次、至少通过 3 次）；失败的节点本轮立即排除，不等待连续三轮，也不允许历史分数把它保留下来。没有候选前置的后置节点不返回。
    评分在已连通节点上单独执行，使用同一个前置和链路。评分接口故障不会跳过连通性测试；最多两次 × 10 秒评分请求，同一分片连续三个已连通节点评分失败后暂缓该分片后续评分，下轮重试。
    本轮未取得评分时沿用最近成功分数；纯净度过滤关闭则保留已连通的无分数节点，开启则还须本轮或历史分数不高于阈值，没有分数的节点不返回。前置被评分过滤移除时，依赖它的后置也移除。评分不影响连通性判定。
    `purity_history.json` 使用连接参数 SHA256 保存评分；`availability.json` 仅用于显示连通失败记录。内核启动失败或中途退出则整轮失败，不把未测节点作为通过发布。
@@ -191,3 +191,18 @@ ADMIN_USER=jayzqj ADMIN_PASSWORD=<本地测试密码> \
 - 首轮完整运行的耗时（一轮约 270 节点串行检测）
 - `https://xiuyuan.9527653.xyz/jay_filtered.yaml` 在 Clash Verge 里实际订阅
 - nginx 转发修正后 `/admin` 与 `/jay_filtered.yaml` 都正常
+
+
+### 稳定性检测、协议过滤与节点导入
+
+- `connectivity_rounds` 可选 `3`（默认）或 `5`。每条链路完成全部采样后按严格多数判定，分别要求至少 2/3、3/5 成功；采样间隔至少 0.5 秒，HTTP 状态必须是 200–299。报告保留每个节点的样本和成功次数，不因评分失败改变结果。
+- 同一静态节点的一组样本使用同一个已验证前置；更换候选前置时重新计数，不混合不同链路的票数。多实例线程池与内核批量并发配合；关闭批量方式时使用每实例最多 8 个线程的受限线程池。
+- `excluded_protocols` 是不输出的协议名称数组，后台可多选；排除发生在检测前，也适用于手工前置候选。纯净度、协议和连通性规则都满足后才发布。
+- 订阅输入支持 HTTP(S) 订阅地址、单节点分享链接（多个用 `|` 或换行分隔），以及原生 Clash YAML/JSON（单节点、节点数组、`proxies:` 文档）。本地节点不经过远程转换服务。支持带 `\://` 的粘贴文本。
+- 分享链接解析涵盖 SS、SSR、VMess、VLESS、Trojan、Hysteria、Hysteria2/Hy2、TUIC、AnyTLS、SOCKS5、HTTP(S) 代理，以及 Snell、WireGuard、SSH、Mieru 的常用 URI 字段。不同客户端的非标准参数会明确报错；复杂传输、多 peer、密钥等用原生 YAML/JSON 保留全部字段。HTTP(S) 代理可使用 `http-proxy://` / `https-proxy://` 避免与订阅网址混淆。这里不会将一个协议误当成另一个协议导入。
+- 原生配置覆盖所捆绑 Mihomo v1.19.15 的全部 18 种类型：`ss`、`ssr`、`socks5`、`http`、`vmess`、`vless`、`snell`、`trojan`、`hysteria`、`hysteria2`、`wireguard`、`tuic`、`ssh`、`mieru`、`anytls`，以及内核内置的 `direct`、`dns`、`reject`。后三者不是远端代理，仍适用连通性过滤。更新内核才可使用该内核新增的协议；原生字段不会被导入器删减。
+- 最终节点名末尾追加 IPv4：优先本轮测得的出口 IPv4，其次已有静态 IP、服务器 IPv4、服务器域名解析的 IPv4。没有可用 IPv4 时不编造；IPv6 不追加。分组与固定前置引用同步更新，重名编号放在 IP 前面。
+- 首页分别显示普通节点（不含静态）、静态节点数量，以及本轮已用时 / 预计总用时。预计值参考上一轮或本轮进度，会随重试调整，并非完成时间保证。
+- 页面使用 `/api/status?summary=true` 和精简配置摘要；不显示、轮询或渲染原始 JSON、被过滤节点列表、当前不输出节点列表。完整诊断报告仍保存在数据目录 `state.json`，接口默认完整形式保留兼容性。配置的“只保存”仍从下轮生效。
+
+验证：`python -m unittest discover -s tests -q`；`python scripts/verify_connectivity.py [mihomo路径]`；`python scripts/verify_stability.py [mihomo路径]`；`python scripts/verify_protocol_import.py [mihomo路径]`。后两项用真实内核验证 3/5 次采样投票和全部 18 种原生协议配置。
