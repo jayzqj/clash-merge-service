@@ -143,6 +143,18 @@ if [ -d "$OLD_WORKDIR" ]; then
   case "$OLD_BIN" in
     "$OLD_WORKDIR"/*) rm -f "$STATE_DIR/mihomo/${OLD_BIN#"$OLD_WORKDIR"/}" ;;
   esac
+  # cp -a keeps symlinks verbatim, so the worker-* geodata links would still
+  # point into the old workdir, which the service user cannot read. Repoint
+  # every symlink in the copy at the same file in the new workdir.
+  find "$STATE_DIR/mihomo" -mindepth 2 -maxdepth 2 -path "$STATE_DIR/mihomo/worker-*/*" -type l |
+    while IFS= read -r link; do
+      name="$(basename "$link")"
+      if [ -e "$STATE_DIR/mihomo/$name" ]; then
+        ln -sfn "$STATE_DIR/mihomo/$name" "$link"
+      else
+        rm -f "$link"
+      fi
+    done
 fi
 if [ "$NEW_BIN" != "$OLD_BIN" ]; then
   install -o root -g root -m 0755 "$OLD_BIN" "$NEW_BIN"

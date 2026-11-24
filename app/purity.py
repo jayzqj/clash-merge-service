@@ -68,7 +68,11 @@ def _worker_workdir(base: Path, worker_id: int) -> Path:
     """Per-worker mihomo home dir. Worker 0 keeps the base dir itself
     (unchanged layout, geodata already there); other workers get a
     subdirectory with symlinks to the base dir's geodata files, so
-    two mihomo processes never share one home dir."""
+    two mihomo processes never share one home dir.
+
+    A link that points anywhere other than this base dir (e.g. left over
+    after the workdir was copied or moved) or that no longer resolves is
+    replaced, so a relocated workdir repairs itself on the next round."""
     if worker_id == 0:
         return base
     d = base / f"worker-{worker_id}"
@@ -76,9 +80,24 @@ def _worker_workdir(base: Path, worker_id: int) -> Path:
     for name in ("geosite.dat", "geoip.dat", "geoip.metadb", "Country.mmdb"):
         src = base / name
         dst = d / name
-        if src.exists() and not dst.exists():
+        target = os.path.abspath(src)
+        if dst.is_symlink():
             try:
-                dst.symlink_to(src)
+                current = os.readlink(dst)
+            except OSError:
+                current = None
+            if current == target and src.exists():
+                continue
+            try:
+                dst.unlink()
+            except FileNotFoundError:
+                pass
+        elif dst.exists():
+            # A real file (copy fallback); leave it alone.
+            continue
+        if src.exists():
+            try:
+                dst.symlink_to(target)
             except OSError:
                 shutil.copy(src, dst)
     return d
