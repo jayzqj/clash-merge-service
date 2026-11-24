@@ -23,10 +23,52 @@ two same-name nodes share one score.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import re
 
 IP_RE = re.compile(r"(\d+\.\d+\.\d+\.\d+)\s*$")
+_NUMERIC_LABEL = re.compile(r"(?:0x[0-9a-f]*|[0-9]+)")
+
+
+def internal_server(server: str) -> bool:
+    """True when ``server`` is a LITERAL internal address (security
+    review S6). A subscription node whose server points at the box
+    itself or the LAN (e.g. ``127.0.0.1``, ``10.x``, ``::1``, or a
+    non-standard numeric form like ``2130706433``) would, during the
+    purity round, make mihomo open a connection to that address — a
+    port scan of the VPS by proxy — and would then be published to
+    clients. Names are NOT resolved here (that needs DNS and belongs to
+    the fetch path); only literals are judged, matching
+    ``fetcher.internal_host``."""
+    host = (server or "").strip().strip("[]").rstrip(".").lower()
+    if not host:
+        return False  # a node with no server is dropped elsewhere
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # Dotted all-numeric forms (2130706433, 0x7f.1) resolve to IPs.
+        # Numeric forms (2130706433, 0x7f.1, 0177.0.0.1) resolve to IPs
+        # too; a label of all-digits/hex is numeric, a real hostname has
+        # at least one non-numeric label. Matches fetcher.internal_host.
+        if all(_NUMERIC_LABEL.fullmatch(label) for label in host.split(".")):
+            return True
+        return False  # a real hostname: not judged here
+    return not address.is_global or address.is_multicast
+
+
+def unique_name(base: str, used: set[str]) -> str:
+    """``base`` if free, else ``base (2)``, ``base (3)``... checking the
+    name actually produced, so a node that is literally called
+    ``HK (2)`` can never collide with a generated suffix."""
+    if base not in used:
+        return base
+    index = 2
+    while f"{base} ({index})" in used:
+        index += 1
+    return f"{base} ({index})"
 
 
 def dedup_key(proxy: dict) -> str:
@@ -66,20 +108,32 @@ def expected_ip(proxy: dict) -> str | None:
     return None
 
 
-def merge_proxies(sources: list[tuple[str, list[dict]]]) -> tuple[list[dict], dict]:
+def merge_proxies(sources: list[tuple[str, list[dict]]],
+                  trusted: frozenset[str] | set[str] = frozenset()) -> tuple[list[dict], dict]:
     """Merge proxies from ``[(source_id, proxies), ...]``.
 
     Returns (merged, stats). Duplicate identities are dropped (first
     occurrence wins); same-name/different-identity nodes get a
     `` (n)`` suffix appended, keywords intact.
+
+    ``trusted`` holds source ids whose nodes may point at the box or the
+    LAN: nodes the admin entered directly (share links / YAML) and local
+    subscription URLs. Only nodes from a remote provider are excluded by
+    ``internal_server`` (security review S6).
     """
     merged: list[dict] = []
     seen_keys: set[tuple] = set()
-    seen_names: dict[str, int] = {}
-    stats = {"total_in": 0, "dedup_removed": 0, "renamed": 0}
-    for _source_id, proxies in sources:
+    used_names: set[str] = set()
+    stats = {"total_in": 0, "dedup_removed": 0, "renamed": 0,
+             "internal_server_excluded": 0, "internal_server_names": []}
+    for source_id, proxies in sources:
         for p in proxies:
             stats["total_in"] += 1
+            if source_id not in trusted and internal_server(str(p.get("server", ""))):
+                stats["internal_server_excluded"] += 1
+                if len(stats["internal_server_names"]) < 50:
+                    stats["internal_server_names"].append(str(p.get("name", ""))[:80])
+                continue
             key = dedup_key(p)
             if key in seen_keys:
                 stats["dedup_removed"] += 1
@@ -88,12 +142,11 @@ def merge_proxies(sources: list[tuple[str, list[dict]]]) -> tuple[list[dict], di
             node = copy.deepcopy(p)
             node.pop("dialer-proxy", None)  # re-injected after conversion
             name = str(node.get("name", ""))
-            if name in seen_names:
-                seen_names[name] += 1
-                node["name"] = f"{name} ({seen_names[name]})"
+            final = unique_name(name, used_names)
+            used_names.add(final)
+            if final != name:
+                node["name"] = final
                 stats["renamed"] += 1
-            else:
-                seen_names[name] = 1
             merged.append(node)
     return merged, stats
 
@@ -123,7 +176,7 @@ def prefix_purity_names(proxies: list[dict], purity: dict) -> tuple[list[dict], 
     get a ``" (n)"`` suffix on the later one.
     """
     stats = {"purity_prefixed": 0, "unmeasured_kept": 0, "purity_reused": 0}
-    seen_names: dict[str, int] = {}
+    used_names: set[str] = set()
     out: list[dict] = []
     for p in proxies:
         node = copy.deepcopy(p)
@@ -135,11 +188,7 @@ def prefix_purity_names(proxies: list[dict], purity: dict) -> tuple[list[dict], 
                 stats["purity_reused"] += 1
         else:
             stats["unmeasured_kept"] += 1
-        name = str(node.get("name", ""))
-        if name in seen_names:
-            seen_names[name] += 1
-            node["name"] = f"{name} ({seen_names[name]})"
-        else:
-            seen_names[name] = 1
+        node["name"] = unique_name(str(node.get("name", "")), used_names)
+        used_names.add(node["name"])
         out.append(node)
     return out, stats

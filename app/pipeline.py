@@ -200,6 +200,9 @@ async def _write_output(cfg: Config, doc: dict) -> None:
     OpenResty serves the output directory statically, and a
     half-written or rejected candidate must never be downloadable.
     It is always removed on failure."""
+    errors = cfg.output_path_errors()
+    if errors:
+        raise FetchError("write", "; ".join(errors))
     out_path = Path(cfg.output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = cfg.path.parent / "output.tmp.yaml"
@@ -408,7 +411,22 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                     % (len(subs), "; ".join(f["error"] for f in failed)))
 
             step = "merge"
-            merged, mstats = merge_proxies(fetched)
+            # S6: nodes the admin entered directly, or fetched from a local
+            # URL, may legitimately point at this box (e.g. a local proxy on
+            # Windows); only remote providers' nodes are checked.
+            from app.fetcher import internal_host
+            from app.node_links import is_node_source
+            import httpx as _httpx
+            trusted = set()
+            for s in subs:
+                url = s.get("url", "")
+                try:
+                    local = is_node_source(url) or internal_host(_httpx.URL(url).host)
+                except Exception:  # noqa: BLE001 - unparsable: treat as remote
+                    local = False
+                if local:
+                    trusted.add(s.get("id", "?"))
+            merged, mstats = merge_proxies(fetched, trusted=trusted)
             report.update(mstats)
             report["protocols_seen"] = sorted({str(p.get("type", "")).lower() for p in merged})
 

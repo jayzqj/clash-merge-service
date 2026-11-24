@@ -5,13 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+# Unprivileged service user (created by deploy/migrate-to-nonroot.sh or
+# DEPLOY.md section 2). The code in /opt is root-owned and read-only.
+User=clash-merge
+Group=clash-merge
 WorkingDirectory=/opt/clash-merge-service
-# Admin password + config path come from this file (NOT in the repo):
-#   ADMIN_USER=jayzqj
-#   ADMIN_PASSWORD=<set on the VPS only>
-#   CLASH_MERGE_CONFIG=/opt/clash-merge-service/config.json
-#   PORT=18080
+# Read by systemd as root BEFORE dropping privileges; the service process
+# itself cannot read this file (root:root 0600). Not in the repo. Keys:
+#   ADMIN_USER               jayzqj
+#   ADMIN_PASSWORD           the admin password (VPS only)
+#   CLASH_MERGE_CONFIG       /var/lib/clash-merge/config.json
+#   CLASH_MERGE_PUBLIC_BASE  https://xiuyuan.9527653.xyz
+#   PORT                     18080
 EnvironmentFile=/etc/clash-merge/env
 ExecStart=/opt/clash-merge-service/venv/bin/python main.py
 Restart=on-failure
@@ -20,6 +25,38 @@ RestartSec=10
 # during a purity round and stopped afterwards. Keep the cap generous
 # enough for a full round, tight enough for the 2 GB box.
 MemoryMax=512M
+
+# --- data: the ONLY writable location ---------------------------------
+# config.json, state files, subscription.token, output/jay_filtered.yaml,
+# mihomo/ (geodata + worker dirs). Created and chowned by systemd.
+StateDirectory=clash-merge
+StateDirectoryMode=0750
+UMask=0077
+
+# --- sandbox ------------------------------------------------------------
+# Everything except /var/lib/clash-merge is read-only for this process,
+# enforced by the kernel, whatever output_path or the code says.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/clash-merge
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# AF_NETLINK: Go (mihomo) reads interface addresses through netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

@@ -52,7 +52,7 @@ py -m venv .venv
 .\.venv\Scripts\python.exe scripts\build_windows.py
 ```
 
-产物 `dist\ClashMerge\ClashMerge.exe` 和 `dist\ClashMerge-Windows-x64.zip`。构建脚本下载官方 Mihomo v1.19.15 及地理数据库并核对 SHA256。数据库 `latest` 会更新；若校验失败，应核对官方发布后更新脚本中的哈希，不能跳过校验。已有核实的 `vendor` 目录可用 `--skip-download` 重建。
+产物 `dist\ClashMerge\ClashMerge.exe` 和 `dist\ClashMerge-Windows-x64.zip`。构建脚本下载官方 Mihomo v1.19.15 及其 LICENSE，按脚本中固定的 SHA256 校验；地理数据库来自 meta-rules-dat 的 `latest` 发布（上游只有这一个会持续更新的版本），按同一发布里的 `.sha256sum` 文件校验，实际使用的哈希写入 `vendor\asset-manifest.json`。任一文件校验失败都会停止打包，不能跳过校验。本地缓存在 `data\windows-assets\`，与上游一致时不重复下载。已有核实的 `vendor` 目录可用 `--skip-download` 重建。
 
 发布包使用 PyInstaller 目录模式，首次运行无需安装 Python。此构建未做代码签名。第三方组件说明见 `THIRD_PARTY.md`，许可文本位于发布包 `licenses`。
 

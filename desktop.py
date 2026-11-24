@@ -45,7 +45,7 @@ def choose_listener(preferred):
 
 def prepare_data(data):
     from app.config import Config
-    from app.runtime import resource_root
+    from app.runtime import default_output_path, ensure_subscription_token, resource_root
     data.mkdir(parents=True, exist_ok=True)
     cfg = Config.load()
     if not cfg.path.exists():
@@ -55,6 +55,11 @@ def prepare_data(data):
             cfg.data["purity_workers"] = recommended["recommended_workers"]
     # The binary lives beside this version of the app, never in the user's PATH.
     cfg.data["mihomo_bin"] = str(resource_root() / "vendor" / "clash-merge-mihomo.exe")
+    # Older builds let the admin page pick any output path; move it back
+    # into the data directory instead of refusing to start.
+    if cfg.output_path_errors():
+        logging.warning("output_path %r is outside the data directory; reset to default", cfg.output_path)
+        cfg.data["output_path"] = str(default_output_path(cfg.path))
     if not Path(cfg.data["mihomo_bin"]).is_file():
         raise RuntimeError("缺少检测内核，请完整解压发布包，不要只复制主 EXE")
     workdir = Path(cfg.data["mihomo_workdir"])
@@ -66,10 +71,7 @@ def prepare_data(data):
             shutil.copyfile(src, dst)
     # Moving/upgrading the portable folder must update its binary location.
     cfg.save()
-    token_file = data / "subscription.token"
-    if not token_file.exists():
-        token_file.write_text(secrets.token_urlsafe(32), encoding="utf-8")
-    os.environ["CLASH_MERGE_SUB_TOKEN"] = token_file.read_text(encoding="utf-8").strip()
+    os.environ["CLASH_MERGE_SUB_TOKEN"] = ensure_subscription_token(data)
     return cfg
 
 

@@ -368,10 +368,12 @@ async def fetch_base(client: httpx.AsyncClient, ini: IniData) -> dict:
     last good file is kept."""
     if not ini.base_url:
         return dict(FALLBACK_BASE)
+    from app.fetcher import read_body
     try:
-        resp = await client.get(ini.base_url, timeout=30)
-        resp.raise_for_status()
-        base = yaml.safe_load(resp.text)
+        _, body = await read_body(client, ini.base_url, timeout=30)
+        base = yaml.safe_load(body.decode("utf-8-sig", errors="replace"))
+    except FetchError as e:
+        raise FetchError("convert", f"clash_rule_base fetch failed: {e.reason}") from e
     except Exception as e:  # noqa: BLE001 - reported as a convert failure
         raise FetchError("convert", f"clash_rule_base fetch failed: "
                          f"{type(e).__name__}: {e}"[:300]) from e
@@ -442,17 +444,19 @@ async def remote_convert(merged_yaml_text: str, ini_url: str,
     url = (subconverter_base + "sub?target=clash"
            f"&url={quote(merged_public_url, safe='')}"
            f"&config={quote(ini_url, safe='')}")
+    from app.fetcher import read_body
     try:
-        resp = await client.get(url, timeout=120)
+        status, body = await read_body(client, url, timeout=120, check_status=False)
     except httpx.HTTPError as e:
         raise FetchError("convert", f"subconverter request failed: "
                          f"{type(e).__name__}: {e}"[:300]) from e
-    if resp.status_code != 200:
+    text = body.decode("utf-8", errors="replace")
+    if status != 200:
         raise FetchError("convert",
-                         f"subconverter HTTP {resp.status_code}: "
-                         f"{resp.text[:200]}")
+                         f"subconverter HTTP {status}: "
+                         f"{text[:200]}")
     try:
-        doc = yaml.safe_load(resp.text)
+        doc = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise FetchError("convert", f"subconverter returned invalid YAML: "
                          f"{e}"[:300]) from e

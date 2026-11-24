@@ -336,7 +336,7 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
         <small>留空 = 保持现有值；页面和接口从不回显真实地址</small></div>
       <div class="f wide"><label for="ini">自定义规则 ini 地址</label><input type="text" id="ini" spellcheck="false"></div>
       <div class="f"><label for="subconv">转换服务地址</label><input type="text" id="subconv" spellcheck="false"></div>
-      <div class="f"><label for="output">输出文件路径（运行本服务的设备上）</label><input type="text" id="output" spellcheck="false"></div>
+      <div class="f"><label for="output">输出文件路径（只读）</label><input type="text" id="output" spellcheck="false" readonly><small>如需修改，请编辑服务器上的 config.json</small></div>
       <div class="f wide"><label for="fetchProxy">订阅与规则下载代理（可选）</label><input type="text" id="fetchProxy" placeholder="例如 http://127.0.0.1:7897" autocomplete="off" spellcheck="false"><small>Windows 留空直连；仅影响订阅与规则下载，不作为节点检测前置。Linux 留空沿用服务环境代理。</small></div>
     </div>
 
@@ -654,10 +654,11 @@ function renderFailed(lr){
 }
 
 function renderConfig(c){
-  $('finalUrl').textContent = c.subscription_url||'';
+  $('finalUrl').textContent = c.subscription_url||'未配置';
   const desktop = c.desktop||{};
   $('desktopPanel').hidden = !desktop.enabled;
-  $('finalUrlHint').textContent = desktop.enabled ? '本机订阅 · 首轮成功后可用' : '由 nginx 静态提供，不经过本服务';
+  $('finalUrlHint').textContent = desktop.enabled ? '本机订阅 · 首轮成功后可用'
+    : (c.subscription_url ? '私有地址 · 含访问令牌，请勿外传' : '服务未设置 CLASH_MERGE_PUBLIC_BASE');
   if(desktop.enabled){
     $('desktopInfo').textContent = '数据目录：'+desktop.data_dir+' · 检测内核：'+(desktop.core_available?'就绪':'缺失');
     if(changed('autorun', desktop.autorun)) $('autorun').checked = !!desktop.autorun;
@@ -843,7 +844,6 @@ async function saveSettings(runNow = true){
     notify_enabled: $('notify').value==='true',
     ini_url: $('ini').value.trim(),
     subconverter_base: $('subconv').value.trim(),
-    output_path: $('output').value.trim(),
     purity_enabled: $('purity').checked,
     purity_filter_enabled: $('purityFilter').checked,
     purity_delay_screen: $('delayScreen').checked,

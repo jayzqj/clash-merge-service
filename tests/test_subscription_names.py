@@ -94,11 +94,12 @@ class SubscriptionNameTests(unittest.TestCase):
         before = self.cfg.path.read_bytes()
         for body in ({"name": "名" * 101, "enabled": False}, {"name": 123}):
             response = self.client.patch("/api/subscriptions/legacy", json=body)
-            self.assertEqual(response.status_code, 422)
+            self.assertEqual(response.status_code, 400)
+            self.assertTrue(response.json()["errors"])
             self.assertEqual(self.cfg.path.read_bytes(), before)
         response = self.client.post("/api/subscriptions", json={
             "url": "https://example.invalid/new", "name": "x" * 101})
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 400)
         self.assertEqual(len(self.cfg.subscriptions), 1)
 
     def test_toggle_and_mixed_patch_still_trigger_pipeline(self):

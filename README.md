@@ -5,8 +5,10 @@ Windows EXE 使用、开机启动及打包见 [WINDOWS.md](WINDOWS.md)；Linux �
 
 把多个 Clash 订阅合并成一份订阅：逐节点测纯净度，失败时沿用上次成功分数，可选按阈值过滤，
 套用自定义规则 ini 生成最终 YAML，托管在 VPS 上，以固定地址
-`https://xiuyuan.9527653.xyz/jay_filtered.yaml` 供 Clash Verge 直接订阅。
-常驻后端服务 + 配置页 `https://xiuyuan.9527653.xyz/admin`。
+`https://xiuyuan.9527653.xyz/subscription/<token>/jay_filtered.yaml` 供 Clash Verge 直接订阅。
+token 由服务首次启动时生成（`subscription.token`，与 `config.json` 同目录），完整地址显示在管理页顶部。
+旧的公开地址 `/jay_filtered.yaml` 已停用。
+常驻后端服务（以非 root 用户 `clash-merge` 运行）+ 配置页 `https://xiuyuan.9527653.xyz/admin`。
 
 需求依据：`~/workspace/your_files/clash-merge-subscription-requirements/clash-merge-subscription-requirements.md`
 （本文档不重复全部需求，只写实现层面的约定；冲突时以需求文档为准。）
@@ -41,10 +43,11 @@ app/
 config.example.json      配置模板（占位符，可提交）
 config.json              真实配置（gitignored，含订阅 token 与 webhook，勿提交）
 deploy/
-  clash-merge.service    systemd 单元（开机自启、失败自动拉起）
-  nginx-xiuyuan.conf     /admin 反代 + /jay_filtered.yaml 静态文件
+  clash-merge.service    systemd 单元（clash-merge 用户、只允许写 /var/lib/clash-merge）
+  nginx-xiuyuan.conf     /admin、/api/、/subscription/ 反代；旧 /jay_filtered.yaml 返回 404
   DEPLOY.md              部署步骤（首次部署、git 拉取更新、直接上传文件）
   update.sh              VPS 上的更新脚本：拉取 origin/main，按需重启并检查
+  migrate-to-nonroot.sh  一次性迁移：root 部署 → clash-merge 用户 + 带 token 的地址
 ```
 
 ## 配置
@@ -60,7 +63,7 @@ deploy/
 | `wechat_webhook` | 沿用之前任务的企业微信 webhook（只放配置文件里） |
 | `ini_url` | 自定义规则 ini（subconverter 远程配置） |
 | `subconverter_base` / `use_remote_subconverter` / `merged_public_url` | 见下“转换方式” |
-| `output_path` | 最终文件路径，VPS 上如 `/var/www/xiuyuan/jay_filtered.yaml` |
+| `output_path` | 最终文件路径。只能是 `<config.json 所在目录>/output/` 下的 `.yaml` 文件（VPS 上为 `/var/lib/clash-merge/output/jay_filtered.yaml`，不填即此默认值）；桌面版为数据目录下的文件。管理页只读，接口拒绝修改，只能改 `config.json`。不合法时该轮在写文件步骤失败 |
 | `purity_enabled` | 只控制评分请求；关闭仍必须检测连通性，有历史分数时继续沿用。评分失败不累计连通性失败 |
 | `purity_filter_enabled` | 默认关；开启后先要求本轮连通，再用本轮或历史分数比较阈值。没有任何分数的不返回。必须同时启用评分 |
 | `purity_threshold` | 后台「纯净度 预留%」，默认 15；输入 0–100 的数字（支持小数），15 表示保留 ≤15%，包含 15%。保存后下轮完整检测生效；过滤关闭时保留阈值但不使用 |
@@ -109,9 +112,15 @@ webhook 只显示是否已设置；`check_front` 只回显名字、类型、服�
 5. 转换之后为静态 TCP 后置固定 `dialer-proxy`，目标为本轮实际测通的前置节点名，确保使用时链路与检测时一致。UDP 后置保持协议支持的直连检测方式；后置分组填入已通过过滤的后置节点。报告 `tested_chains` 逐项记录后置与前置的对应关系。
    低纯净分组仍使用 ≤15 分且非 http 的已输出节点。
 6. 发布前保护仍拒绝订阅来源异常造成的非预期数量骤减。因本轮连通性失败、评分阈值或前置依赖主动排除的节点计入预期缩减；全部被排除时允许发布空节点列表（空组使用 REJECT），避免继续返回已测失败节点。
-7. 成功才原子替换输出文件：临时文件写在 `config.json` 同目录（不在 nginx
-   静态目录里，候选文件不会被下载到），`mihomo -t` 校验通过后 `os.replace`；
+7. 成功才原子替换输出文件：临时文件写在 `config.json` 同目录（不在 `output/`
+   里，候选文件不会被下载到），`mihomo -t` 校验通过后 `os.replace`；
    失败时临时文件被删除。任何一步失败都保留上一次的好文件，并记录失败步骤 + 原因。
+   写入前再次校验 `output_path`，不在输出目录内就拒绝写。
+
+订阅由本服务提供：`GET /subscription/<token>/jay_filtered.yaml`，token 比较用
+`compare_digest`，不对一律 404，响应带 `Cache-Control: no-store`。公网域名来自
+环境变量 `CLASH_MERGE_PUBLIC_BASE`（只接受 `https://域名`），未设置时管理页和通知显示“未配置”。
+企业微信成功通知里写完整地址（含 token）。uvicorn access log 已关闭，避免 token 进 journal。
 
 运行锁：上一轮没跑完时，调度或手动触发直接跳过并记日志，绝不并发跑两轮。
 配置页提供「只保存，下轮生效」和「保存设置并立即执行」两种操作。
@@ -171,6 +180,10 @@ ADMIN_USER=jayzqj ADMIN_PASSWORD=<本地测试密码> \
 # 浏览器打开 http://127.0.0.1:18080/admin （会弹 Basic Auth）
 ```
 
+本地运行时，把 `config.json` 里的 `output_path` 删掉（默认写到 `./output/jay_filtered.yaml`），
+`mihomo_bin` / `mihomo_workdir` 改成本机路径。`subscription.token` 会生成在仓库根目录，
+已 gitignore。需要在管理页看到完整订阅地址时，再设 `CLASH_MERGE_PUBLIC_BASE`。
+
 不同运行设备的 UDP、路由和运营商限制可能不同；Windows 本机结果以本机网络为准，Linux VPS 结果以服务器网络为准。
 缺少 mihomo 内核时本轮检测失败，不发布未验证节点。
 
@@ -189,8 +202,9 @@ ADMIN_USER=jayzqj ADMIN_PASSWORD=<本地测试密码> \
 
 - hysteria2 节点在 VPS 上能测通纯净度
 - 首轮完整运行的耗时（一轮约 270 节点串行检测）
-- `https://xiuyuan.9527653.xyz/jay_filtered.yaml` 在 Clash Verge 里实际订阅
-- nginx 转发修正后 `/admin` 与 `/jay_filtered.yaml` 都正常
+- `https://xiuyuan.9527653.xyz/subscription/<token>/jay_filtered.yaml` 在 Clash Verge 里实际订阅
+- nginx 修改后 `/admin`、`/subscription/<token>/...` 正常，`/jay_filtered.yaml` 返回 404
+- mihomo 在 systemd 沙箱（非 root、`RestrictAddressFamilies` 等）下检测正常
 
 
 ### 稳定性检测、协议过滤与节点导入

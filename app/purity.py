@@ -140,6 +140,21 @@ def build_mihomo_config(proxies: list[dict], front_name: str | None,
     }
 
 
+# Security review S9: each worker's mihomo.log was append-only and grew
+# forever on a long-running VPS. Truncate it at the start of a round once
+# it is over MIHOMO_LOG_MAX_BYTES; the current round's output is what
+# matters for diagnosis.
+MIHOMO_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _log_mode(path: Path) -> str:
+    """'w' (truncate) when the log is over the size limit, else 'a'."""
+    try:
+        return "w" if path.stat().st_size > MIHOMO_LOG_MAX_BYTES else "a"
+    except OSError:
+        return "a"
+
+
 class MihomoChecker:
     def __init__(self, config, worker_id: int = 0):
         self.cfg = config
@@ -206,7 +221,8 @@ class MihomoChecker:
                                            sort_keys=False), encoding="utf-8")
         # The child keeps its own copy of the fd; close ours right
         # away so every round does not leak one file handle.
-        with open(self.workdir / "mihomo.log", "a", encoding="utf-8") as logfile:
+        log_path = self.workdir / "mihomo.log"
+        with open(log_path, _log_mode(log_path), encoding="utf-8") as logfile:
             self.proc = start_process(
                 [binary, "-f", str(cfg_path), "-d", str(self.workdir)],
                 stdout=logfile, stderr=subprocess.STDOUT)

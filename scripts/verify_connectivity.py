@@ -51,11 +51,12 @@ async def main():
     base='http://127.0.0.1:'+str(server.server_port)
     with tempfile.TemporaryDirectory(prefix='clash-connectivity-') as folder:
         root=Path(folder)
+        (root/'output').mkdir()
         cfg=Config(data=copy.deepcopy(DEFAULTS),path=root/'config.json')
         binary=ROOT/'vendor/clash-merge-mihomo.exe'
         if len(sys.argv)>1: binary=Path(sys.argv[1])
         cfg.data.update(notify_enabled=False,execution_start='00:00',execution_end='23:59',
-                        subscriptions=[{'id':'fixture','url':base}],output_path=str(root/'out.yaml'),
+                        subscriptions=[{'id':'fixture','url':base}],output_path=str(root/'output'/'out.yaml'),
                         mihomo_bin=str(binary),mihomo_workdir=str(root/'mihomo'),purity_workers=1,
                         mihomo_mixed_port=free_port(),mihomo_controller_port=free_port(),
                         connectivity_url=base+'/ping',connectivity_timeout_ms=1000,purity_info_url=base+'/info')

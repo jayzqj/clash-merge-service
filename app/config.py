@@ -20,13 +20,18 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from app.runtime import defaults_for_platform, desktop_mode, desktop_data_dir
+from app.runtime import (default_output_path, defaults_for_platform, desktop_mode,
+                         desktop_data_dir, output_root)
 
 # Upper bounds enforced by validate(). 8 mihomo instances already
 # saturate a 2 GB VPS under MemoryMax=512M; a day is the longest
 # sensible interval.
 MAX_PURITY_WORKERS = 8
 MAX_INTERVAL_SECONDS = 86400
+
+# Published file name rules: plain name, .yaml, never the pipeline's temp file.
+_OUTPUT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.yaml")
+_RESERVED_OUTPUT_NAMES = {"output.tmp.yaml"}
 
 DEFAULTS: dict = {
     "subscriptions": [],
@@ -39,7 +44,10 @@ DEFAULTS: dict = {
     "subconverter_base": "https://suburl.v1.mk/",
     "use_remote_subconverter": False,
     "merged_public_url": "",
-    "output_path": "/var/www/xiuyuan/jay_filtered.yaml",
+    # Filled from the config location (see runtime.output_root); it is
+    # NOT editable through the API, only in config.json, and must stay
+    # inside the output directory.
+    "output_path": "",
     "purity_enabled": True,
     "purity_filter_enabled": False,
     "purity_threshold": 15,
@@ -105,6 +113,10 @@ def mask_check_front(front) -> dict:
 class Config:
     data: dict = field(default_factory=lambda: defaults_for_platform(DEFAULTS))
     path: Path = field(default_factory=default_config_path)
+
+    def __post_init__(self) -> None:
+        if not self.data.get("output_path"):
+            self.data["output_path"] = str(default_output_path(self.path))
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -178,6 +190,32 @@ class Config:
         return bool(self.data.get("check_front_enabled", False))
 
     # -- validation -----------------------------------------------------
+    def output_path_errors(self) -> list[str]:
+        """output_path must be a plain .yaml file directly inside
+        runtime.output_root(): no traversal, no symlinked directory, no
+        other location the service process could be tricked into writing."""
+        raw = self.data.get("output_path")
+        if not isinstance(raw, str) or not raw.strip():
+            return ["output_path is empty"]
+        root = output_root(self.path)
+        hint = f"output_path 必须是 {root} 目录下的 .yaml 文件"
+        path = Path(raw)
+        if not path.is_absolute() or ".." in path.parts:
+            return [hint + "（须为绝对路径，不能包含 ..）"]
+        if not _OUTPUT_NAME.fullmatch(path.name) or path.name in _RESERVED_OUTPUT_NAMES:
+            return [hint + "（文件名只能包含字母、数字、点、下划线和短横线）"]
+        if root.is_symlink():
+            return [hint + "（输出目录不能是符号链接）"]
+        try:
+            same_dir = path.parent.resolve() == root.resolve()
+        except OSError:
+            same_dir = False
+        if not same_dir:
+            return [hint]
+        if path.is_symlink() or path.is_dir():
+            return [hint + "（目标不能是符号链接或目录）"]
+        return []
+
     def validate(self) -> list[str]:
         errors: list[str] = []
         for key, default in (("execution_start", "08:00"), ("execution_end", "23:59")):
@@ -220,6 +258,9 @@ class Config:
                 for key in ("name", "type", "server", "port"):
                     if not front.get(key):
                         errors.append(f"check_front is missing {key}")
+                # Security review S7: settable from the admin page, so bound it.
+                if len(json.dumps(front, ensure_ascii=False, default=str)) > 8192:
+                    errors.append("check_front 节点配置过大（上限 8192 字符）")
         if self.check_front_enabled and not isinstance(front, dict):
             errors.append("check_front_enabled is on but check_front is not "
                           "configured in config.json")
@@ -235,10 +276,15 @@ class Config:
                     errors.append(f"subscription {s.get('id', '?')}: {exc}")
         if self.notify_enabled and not self.wechat_webhook:
             errors.append("notify_enabled is on but wechat_webhook is empty")
+        # Security review S8: the WeChat webhook receives the success
+        # notification, which contains the full subscription URL (token).
+        # A mistyped plaintext URL would leak that token over http, so
+        # require https when a webhook is set.
+        if self.wechat_webhook and not re.fullmatch(r"https://\S+", self.wechat_webhook):
+            errors.append("wechat_webhook 必须是 https 地址（通知含订阅 token，不能用明文地址）")
         if not self.ini_url.startswith("https://"):
             errors.append("ini_url must be an https URL")
-        if not self.output_path:
-            errors.append("output_path is empty")
+        errors.extend(self.output_path_errors())
         proxy = self.data.get("fetch_proxy_url", "")
         if not re.fullmatch(r"https?://\S+", str(self.data.get("connectivity_url", ""))):
             errors.append("连通性测试地址须为 http:// 或 https:// 地址")

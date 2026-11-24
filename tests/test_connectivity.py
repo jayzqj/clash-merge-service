@@ -22,7 +22,8 @@ class ConnectivityTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cfg = Config(data=copy.deepcopy(DEFAULTS), path=Path(self.temp.name)/'config.json')
-        self.cfg.data.update(output_path=str(Path(self.temp.name)/'out.yaml'), notify_enabled=False)
+        (Path(self.temp.name)/'output').mkdir()
+        self.cfg.data.update(output_path=str(Path(self.temp.name)/'output'/'out.yaml'), notify_enabled=False)
 
     def test_missing_or_failed_connection_cannot_reuse_score_to_pass(self):
         nodes = [node('unknown',1), node('failed',2), node('connected-unscored',3)]

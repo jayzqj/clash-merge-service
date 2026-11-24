@@ -33,8 +33,9 @@ class ConfigFixture:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
+        (self.root / "output").mkdir()
         data = copy.deepcopy(DEFAULTS)
-        data.update(notify_enabled=False, output_path=str(self.root / "out.yaml"),
+        data.update(notify_enabled=False, output_path=str(self.root / "output" / "out.yaml"),
                     execution_start="00:00", execution_end="23:59",
                     subscriptions=[{"id": "test", "url": "https://example.invalid/sub"}])
         self.cfg = Config(data=data, path=self.root / "config.json")

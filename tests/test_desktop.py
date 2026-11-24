@@ -24,7 +24,8 @@ class DesktopTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(os.environ, {
             "CLASH_MERGE_DESKTOP": "1", "CLASH_MERGE_DATA_DIR": str(self.root),
             "CLASH_MERGE_CONFIG": str(self.root / "config.json"),
-            "CLASH_MERGE_DESKTOP_TOKEN": "admin-test-token", "CLASH_MERGE_SUB_TOKEN": "subscription-test-token",
+            "CLASH_MERGE_DESKTOP_TOKEN": "admin-test-token",
+            "CLASH_MERGE_SUB_TOKEN": "subscription-test-token-0123456789abcdef",
             "PORT": "18080"}))
         self.cfg = Config.load()
         self.stack.enter_context(patch.object(web, "CFG", self.cfg))
@@ -57,7 +58,7 @@ class DesktopTests(unittest.TestCase):
         Path(self.cfg.output_path).write_text("proxies: []\n", encoding="utf-8")
         self.client.cookies.clear()
         self.assertEqual(self.client.get("/subscription/bad/jay_filtered.yaml").status_code, 404)
-        response = self.client.get("/subscription/subscription-test-token/jay_filtered.yaml")
+        response = self.client.get("/subscription/subscription-test-token-0123456789abcdef/jay_filtered.yaml")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, Path(self.cfg.output_path).read_bytes())
 
@@ -121,8 +122,9 @@ class ProcessTests(unittest.TestCase):
     def test_failed_validation_preserves_last_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "output").mkdir()
             cfg = Config(data=copy.deepcopy(DEFAULTS), path=root / "config.json")
-            cfg.data["output_path"] = str(root / "published.yaml")
+            cfg.data["output_path"] = str(root / "output" / "published.yaml")
             target = Path(cfg.output_path)
             target.write_text("old file", encoding="utf-8")
             with patch.object(pipeline, "run_process", side_effect=subprocess.TimeoutExpired("mihomo", 120)):

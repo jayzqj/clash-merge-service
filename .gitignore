@@ -10,6 +10,9 @@ data/
 state.json
 availability.json
 purity_history.json
+# Local dev runs: published output and the subscription token
+output/
+subscription.token
 # Python
 __pycache__/
 *.pyc
@@ -22,3 +25,6 @@ mihomo/
 dist/
 build/
 vendor/
+# Local agent tooling and handoff notes
+.claude/
+HANDOFF.md

@@ -5,8 +5,8 @@
 #
 # What it does:
 #   1. git fetch, then move the checkout to origin/main. Untracked and
-#      gitignored files (config.json, state.json, availability.json,
-#      venv/, mihomo/) are never touched.
+#      gitignored files (venv/) are never touched. Runtime data lives in
+#      /var/lib/clash-merge, outside the checkout.
 #   2. pip install when requirements.txt changed.
 #   3. Restart the service when Python code or requirements changed,
 #      after waiting for a running round to finish, then check /health.

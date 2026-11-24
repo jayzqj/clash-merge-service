@@ -8,8 +8,11 @@ logged-in admin — the user asked for this on 2026-11-12; the page
 is login-protected, so only the admin sees them. The webhook value
 is still never echoed: see ``Config.public_view``.
 
-Linux output is served by nginx. The Windows launcher enables a
-loopback-only subscription endpoint and local session authentication.
+The published YAML is served by THIS process at
+``/subscription/<token>/jay_filtered.yaml`` on both Linux and Windows;
+the token lives in ``subscription.token`` next to config.json. nginx
+only reverse-proxies that path, it never serves the file statically.
+The Windows launcher additionally enables local session authentication.
 """
 from __future__ import annotations
 
@@ -24,7 +27,8 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
@@ -58,13 +62,96 @@ def _check_auth(request: Request, credentials: HTTPBasicCredentials | None = Dep
                             detail="admin password not configured on server")
     if credentials is None:
         raise HTTPException(status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Basic"})
+    ip = _client_ip(request)
+    retry_after = _LOGIN_LIMITER.locked(ip)
+    if retry_after:
+        raise HTTPException(status_code=429, detail="too many failed logins, try again later",
+                            headers={"Retry-After": str(retry_after)})
     user_ok = secrets.compare_digest(credentials.username, ADMIN_USER)
     pw_ok = secrets.compare_digest(credentials.password, _admin_password)
     if not (user_ok and pw_ok):
+        if _LOGIN_LIMITER.fail(ip):
+            log.warning("auth: failed admin login from %s; locked for %d s", ip, LOGIN_LOCK_SECONDS)
+        else:
+            log.warning("auth: failed admin login from %s", ip)
         raise HTTPException(
             status_code=401, detail="unauthorized",
             headers={"WWW-Authenticate": "Basic realm=\"clash-merge admin\""})
+    _LOGIN_LIMITER.reset(ip)
     return credentials.username
+
+
+# Login throttling (security review S2): the admin UI is on the public
+# internet behind HTTP Basic, which browsers and scripts can retry without
+# limit. After LOGIN_MAX_FAILURES consecutive wrong passwords from one IP,
+# that IP gets 429 for LOGIN_LOCK_SECONDS, even with the right password.
+# State is in memory only: a restart clears it, which is acceptable.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_SECONDS = 15 * 60
+_LOGIN_TRACKED_MAX = 10000
+
+
+class LoginLimiter:
+    def __init__(self, max_failures=LOGIN_MAX_FAILURES, lock_seconds=LOGIN_LOCK_SECONDS,
+                 clock=time.monotonic):
+        self.max_failures = max_failures
+        self.lock_seconds = lock_seconds
+        self.clock = clock
+        # ip -> [consecutive failures, locked until (0 = not locked), last seen]
+        self._entries: dict[str, list] = {}
+
+    def locked(self, ip: str) -> int:
+        """Seconds left on the lock, 0 when not locked."""
+        entry = self._entries.get(ip)
+        if not entry or not entry[1]:
+            return 0
+        left = entry[1] - self.clock()
+        if left <= 0:
+            del self._entries[ip]
+            return 0
+        return max(1, int(left + 0.999))
+
+    def fail(self, ip: str) -> bool:
+        """Record a failure; True when this failure starts a lock."""
+        now = self.clock()
+        if ip not in self._entries and len(self._entries) >= _LOGIN_TRACKED_MAX:
+            self._prune(now)
+        entry = self._entries.setdefault(ip, [0, 0.0, now])
+        entry[0] += 1
+        entry[2] = now
+        if entry[0] >= self.max_failures:
+            entry[0] = 0
+            entry[1] = now + self.lock_seconds
+            return True
+        return False
+
+    def reset(self, ip: str) -> None:
+        self._entries.pop(ip, None)
+
+    def _prune(self, now: float) -> None:
+        stale = [ip for ip, (_, until, seen) in self._entries.items()
+                 if (until and until <= now) or (not until and now - seen > self.lock_seconds)]
+        for ip in stale:
+            del self._entries[ip]
+        if len(self._entries) >= _LOGIN_TRACKED_MAX:
+            # Still full of live entries: drop the oldest unlocked ones.
+            for ip, _ in sorted(((ip, e[2]) for ip, e in self._entries.items() if not e[1]),
+                                key=lambda item: item[1])[:len(self._entries) // 2 or 1]:
+                del self._entries[ip]
+
+
+_LOGIN_LIMITER = LoginLimiter()
+
+
+def _client_ip(request: Request) -> str:
+    """The service listens on 127.0.0.1 only, behind nginx, which sets
+    X-Real-IP. The header is trusted only from a loopback peer."""
+    peer = request.client.host if request.client else ""
+    if peer in ("127.0.0.1", "::1", "localhost", "testclient"):
+        forwarded = request.headers.get("x-real-ip", "").strip()
+        if forwarded:
+            return forwarded[:64]
+    return peer or "unknown"
 
 
 CFG: Config | None = None
@@ -105,6 +192,14 @@ def _start_run() -> bool:
 async def lifespan(app: FastAPI):
     global CFG, STATE
     CFG = Config.load()
+    if not runtime.desktop_mode():
+        # Desktop sets this in desktop.prepare_data().
+        os.environ["CLASH_MERGE_SUB_TOKEN"] = runtime.ensure_subscription_token(CFG.path.parent)
+        for error in CFG.output_path_errors():
+            log.error("config: %s — rounds will fail until config.json is fixed", error)
+        if not runtime.public_base():
+            log.warning("CLASH_MERGE_PUBLIC_BASE is unset or not an https origin; "
+                        "the admin page and notifications cannot show the subscription URL")
     STATE = load_state(CFG)
     task = _spawn(scheduler_loop(CFG, STATE))
     log.info("clash-merge service started; next run %s", STATE.next_run)
@@ -115,7 +210,43 @@ async def lifespan(app: FastAPI):
     await asyncio.gather(*pending, return_exceptions=True)
 
 
-app = FastAPI(title="clash-merge-service", lifespan=lifespan)
+# Security review S4: the interactive API docs (/docs, /redoc) and the
+# OpenAPI schema (/openapi.json) are unauthenticated. nginx does not
+# proxy them, so they are unreachable from the public site, but they are
+# open to anyone who can reach the service directly (localhost, desktop).
+# Nothing in this app consumes them, so turn them off entirely.
+app = FastAPI(title="clash-merge-service", lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def _validation_message(err: dict) -> str:
+    """One readable line per pydantic error, e.g. ``ini_url：长度不能超过 2048 个字符``."""
+    loc = [str(p) for p in err.get("loc", ()) if p not in ("body", "query", "path")]
+    field = ".".join(loc) or "请求"
+    kind = err.get("type", "")
+    ctx = err.get("ctx") or {}
+    if kind == "string_too_long":
+        text = f"长度不能超过 {ctx.get('max_length')} 个字符"
+    elif kind == "string_too_short":
+        text = f"长度不能少于 {ctx.get('min_length')} 个字符"
+    elif kind == "too_long":
+        text = f"最多 {ctx.get('max_length')} 项"
+    elif kind == "missing":
+        text = "缺少此字段"
+    else:
+        text = str(err.get("msg", "格式不正确"))
+    return f"{field}：{text}"
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    """Request-body validation failures (field types, S7 length/count
+    bounds) answer 400 ``{"errors": [...]}`` — the same shape as
+    ``Config.validate`` failures — so the admin page shows a readable
+    message instead of FastAPI's raw 422 detail list. Input values are
+    never echoed back (they may be URLs with tokens)."""
+    return JSONResponse(status_code=400,
+                        content={"errors": [_validation_message(e) for e in exc.errors()]})
 
 
 @app.middleware("http")
@@ -138,6 +269,34 @@ async def csrf_guard(request: Request, call_next):
     return await call_next(request)
 
 
+# Security response headers (security review S3). CSP: the admin page
+# serves exactly one inline <script> (signed per-request with a nonce,
+# so 'unsafe-inline' script is NOT allowed) and inline styles (the
+# <style> block and two static style= attributes carry no user data, so
+# 'unsafe-inline' style is acceptable). Everything else is denied; the
+# page loads no external script, font or image, and talks only to its
+# own origin. frame-ancestors/X-Frame-Options stop click-jacking.
+def _csp(nonce: str) -> str:
+    return ("default-src 'none'; "
+            f"script-src 'nonce-{nonce}'; "
+            "style-src 'unsafe-inline'; "
+            "img-src data:; connect-src 'self'; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    request.state.csp_nonce = secrets.token_urlsafe(16)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Content-Security-Policy", _csp(request.state.csp_nonce))
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 def _cfg() -> Config:
     assert CFG is not None
     return CFG
@@ -154,8 +313,29 @@ async def health():
 
 
 @app.get("/admin")
-async def admin_page(_user: str = Depends(_check_auth)):
-    return FileResponse(Path(__file__).parent / "static" / "admin.html")
+async def admin_page(request: Request, _user: str = Depends(_check_auth)):
+    nonce = getattr(request.state, "csp_nonce", "") or secrets.token_urlsafe(16)
+    return HTMLResponse(_admin_html(nonce))
+
+
+_ADMIN_HTML: tuple[str, str] | None = None
+
+
+def _admin_html(nonce: str) -> str:
+    """admin.html with the single inline <script> tagged with the CSP
+    nonce. The file is read once; the exact tag ``<script>`` must occur
+    exactly once (asserted at load) so a later edit that adds another
+    script can never silently ship unsigned (and thus CSP-blocked)."""
+    global _ADMIN_HTML
+    if _ADMIN_HTML is None:
+        raw = (Path(__file__).parent / "static" / "admin.html").read_text(encoding="utf-8")
+        if raw.count("<script>") != 1 or "<script " in raw:
+            raise RuntimeError("admin.html must contain exactly one unattributed <script> tag "
+                               "for CSP nonce injection")
+        head, tail = raw.split("<script>", 1)
+        _ADMIN_HTML = (head, tail)
+    head, tail = _ADMIN_HTML
+    return f'{head}<script nonce="{nonce}">{tail}'
 
 
 @app.get("/api/status")
@@ -210,14 +390,20 @@ async def desktop_open(token: str):
 
 
 @app.get("/subscription/{token}/jay_filtered.yaml")
-async def desktop_subscription(token: str):
+async def subscription(token: str):
     expected = os.environ.get("CLASH_MERGE_SUB_TOKEN", "")
-    if not runtime.desktop_mode() or not expected or not secrets.compare_digest(token, expected):
+    if (not runtime.valid_token(expected)
+            or not secrets.compare_digest(token.encode("utf-8"), expected.encode("utf-8"))):
         raise HTTPException(status_code=404, detail="not found")
-    output = Path(_cfg().output_path)
+    cfg = _cfg()
+    if cfg.output_path_errors():
+        raise HTTPException(status_code=404, detail="not found")
+    output = Path(cfg.output_path)
     if not output.is_file():
         raise HTTPException(status_code=404, detail="尚未生成订阅，请添加订阅源并完成一轮检测")
-    return FileResponse(output, media_type="application/yaml", headers={"Cache-Control": "no-store"})
+    return FileResponse(output, media_type="application/yaml",
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                                 "X-Content-Type-Options": "nosniff"})
 
 
 class AutorunIn(BaseModel):
@@ -243,16 +429,27 @@ async def desktop_exit(_user: str = Depends(_check_auth)):
     return {"ok": True}
 
 
+# Field bounds (security review S7): the admin is trusted, so these are
+# guard rails against a fat-finger or a runaway config file, not an
+# attacker. URLs and names are length-capped; lists and the subscription
+# total are count-capped (see MAX_SUBSCRIPTIONS in the add handler).
+_MAX_URL = 2048
+_MAX_PROTOCOLS = 64
+# A real deployment has a handful of subscription sources; this only
+# stops the config file from growing without bound.
+MAX_SUBSCRIPTIONS = 200
+
+
 class SettingsIn(BaseModel):
     run_now: bool = Field(default=True, strict=True)
     interval_seconds: int | None = None
     execution_start: str | None = None
     execution_end: str | None = None
     notify_enabled: bool | None = None
-    wechat_webhook: str | None = None  # empty/absent = keep current
-    ini_url: str | None = None
-    subconverter_base: str | None = None
-    output_path: str | None = None
+    wechat_webhook: str | None = Field(default=None, max_length=_MAX_URL)  # empty/absent = keep current
+    ini_url: str | None = Field(default=None, max_length=_MAX_URL)
+    subconverter_base: str | None = Field(default=None, max_length=_MAX_URL)
+    output_path: str | None = None  # read-only: accepted only when unchanged
     purity_enabled: bool | None = None
     purity_filter_enabled: bool | None = None
     purity_threshold: float | None = Field(default=None, ge=0, le=100, strict=True)
@@ -260,24 +457,24 @@ class SettingsIn(BaseModel):
     purity_delay_screen: bool | None = None
     check_front_enabled: bool | None = None
     use_remote_subconverter: bool | None = None
-    merged_public_url: str | None = None
-    fetch_proxy_url: str | None = None
+    merged_public_url: str | None = Field(default=None, max_length=_MAX_URL)
+    fetch_proxy_url: str | None = Field(default=None, max_length=_MAX_URL)
     fetch_direct_fallback: bool | None = None
-    connectivity_url: str | None = None
+    connectivity_url: str | None = Field(default=None, max_length=_MAX_URL)
     connectivity_timeout_ms: int | None = None
     connectivity_rounds: int | None = Field(default=None, strict=True)
-    excluded_protocols: list[str] | None = None
+    excluded_protocols: list[str] | None = Field(default=None, max_length=_MAX_PROTOCOLS)
     check_front: dict | None = None
 
 
 class SubscriptionIn(BaseModel):
-    url: str = Field(min_length=8)
+    url: str = Field(min_length=8, max_length=_MAX_URL)
     name: str = Field(default="", max_length=100)
 
 
 class SubscriptionPatch(BaseModel):
     enabled: bool | None = None
-    url: str | None = None
+    url: str | None = Field(default=None, max_length=_MAX_URL)
     name: str | None = Field(default=None, max_length=100)
 
 
@@ -316,8 +513,9 @@ async def api_put_config(body: SettingsIn, request: Request,
         data["ini_url"] = body.ini_url.strip()
     if body.subconverter_base is not None:
         data["subconverter_base"] = body.subconverter_base.strip()
-    if body.output_path is not None:
-        data["output_path"] = body.output_path.strip()
+    if body.output_path is not None and body.output_path.strip() != cfg.output_path:
+        return JSONResponse(status_code=400, content={
+            "errors": ["输出文件路径只能在服务器的 config.json 中修改"]})
     if body.purity_enabled is not None:
         data["purity_enabled"] = body.purity_enabled
     if body.purity_filter_enabled is not None:
@@ -361,6 +559,9 @@ async def api_put_config(body: SettingsIn, request: Request,
 async def api_add_subscription(body: SubscriptionIn,
                                _user: str = Depends(_check_auth)):
     cfg = _cfg()
+    if len(cfg.subscriptions) >= MAX_SUBSCRIPTIONS:
+        raise HTTPException(status_code=400,
+                            detail=f"订阅源数量已达上限 {MAX_SUBSCRIPTIONS}")
     try:
         url = validate_source(body.url)
     except ValueError as exc:
@@ -500,4 +701,6 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     port = int(os.environ.get("PORT", "18080"))
-    uvicorn.run("app.web:app", host="127.0.0.1", port=port, log_level="info")
+    # No access log: request paths carry the subscription token.
+    uvicorn.run("app.web:app", host="127.0.0.1", port=port, log_level="info",
+                access_log=False)
