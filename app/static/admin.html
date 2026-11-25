@@ -338,6 +338,7 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
       <div class="f"><label for="subconv">转换服务地址</label><input type="text" id="subconv" spellcheck="false"></div>
       <div class="f"><label for="output">输出文件路径（只读）</label><input type="text" id="output" spellcheck="false" readonly><small>如需修改，请编辑服务器上的 config.json</small></div>
       <div class="f wide"><label for="fetchProxy">订阅与规则下载代理（可选）</label><input type="text" id="fetchProxy" placeholder="例如 http://127.0.0.1:7897" autocomplete="off" spellcheck="false"><small>Windows 留空直连；仅影响订阅与规则下载，不作为节点检测前置。Linux 留空沿用服务环境代理。</small></div>
+      <div class="f"><label for="minNodes">订阅地址最少节点数</label><input type="number" id="minNodes" min="0" max="5000" step="1"><small>拉取到的节点少于该数量时，这条订阅地址记为失败；0 表示不限制。节点分享链接不受影响。</small></div>
     </div>
 
     <label class="opt"><input type="checkbox" id="fetchFallback"><span>下载代理失败时直连重试（订阅与规则）</span></label>
@@ -524,6 +525,7 @@ function fillForm(c){
   $('connectivityTimeout').value = c.connectivity_timeout_ms||10000;
   $('fetchFallback').checked = c.fetch_direct_fallback !== false;
   $('fetchProxy').value = c.fetch_proxy_url||'';
+  $('minNodes').value = c.min_nodes_per_subscription ?? 5;
   $('frontJson').value = '';
   $('clearFront').checked = false;
   $('webhook').value = '';
@@ -833,6 +835,11 @@ async function saveSettings(runNow = true){
       $('purityThreshold').focus(); return;
     }
   }
+  const minNodes = $('minNodes').valueAsNumber;
+  if(!Number.isInteger(minNodes) || minNodes < 0 || minNodes > 5000){
+    say($('setMsg'), '订阅地址最少节点数必须是 0–5000 之间的整数。', 'bad');
+    $('minNodes').focus(); return;
+  }
   const body = {run_now: runNow, interval_seconds: parseInt($('interval').value,10),
     connectivity_url: $('connectivityUrl').value.trim(),
     connectivity_timeout_ms: parseInt($('connectivityTimeout').value,10),
@@ -853,6 +860,7 @@ async function saveSettings(runNow = true){
     merged_public_url: $('mergedUrl').value.trim()};
   if($('purityFilter').checked) body.purity_threshold = $('purityThreshold').valueAsNumber;
   body.fetch_proxy_url = $('fetchProxy').value.trim();
+  body.min_nodes_per_subscription = minNodes;
   if($('clearFront').checked){ body.check_front = null; body.check_front_enabled = false; }
   else if($('frontJson').value.trim()){
     try{

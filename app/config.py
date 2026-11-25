@@ -66,6 +66,8 @@ DEFAULTS: dict = {
     "min_interval_seconds": 300,
     "fetch_proxy_url": "",
     "fetch_direct_fallback": True,
+    # A subscription URL yielding fewer nodes counts as a failed source; 0 = no minimum.
+    "min_nodes_per_subscription": 5,
     "connectivity_url": "https://cp.cloudflare.com/generate_204",
     "connectivity_timeout_ms": 10000,
     "connectivity_rounds": 3,
@@ -247,6 +249,10 @@ class Config:
                 or not isinstance(threshold, (int, float))
                 or not math.isfinite(threshold) or not 0 <= threshold <= 100):
             errors.append("纯净度预留必须是 0–100 之间的数字")
+        min_nodes = self.data.get("min_nodes_per_subscription", 5)
+        if (isinstance(min_nodes, bool) or not isinstance(min_nodes, int)
+                or not 0 <= min_nodes <= 5000):
+            errors.append("订阅源最少节点数必须是 0–5000 之间的整数")
         if (self.data.get("purity_filter_enabled", False)
                 and not self.data.get("purity_enabled", True)):
             errors.append("开启纯净度过滤时必须同时启用纯净度检测")

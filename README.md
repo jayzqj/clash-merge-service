@@ -71,6 +71,7 @@ deploy/
 | `purity_delay_screen` | 默认开：批量检测连通性；关闭改为逐个检测，失败节点当轮立即排除 |
 | `connectivity_url` / `connectivity_timeout_ms` | 独立于评分接口的 HTTP 连通性目标（默认 Cloudflare generate_204）与超时（默认 10000ms，范围 1000–30000），默认连续 3 次，至少通过 2 次；可选 5 次，至少通过 3 次 |
 | `fetch_proxy_url` / `fetch_direct_fallback` | 下载代理；默认开启代理失败后直连重试。只影响订阅和规则下载，不改变节点检测链路；报告记录每个源的实际下载路径 |
+| `min_nodes_per_subscription` | 后台「订阅地址最少节点数」，默认 5；订阅地址拉取到的节点少于该数量时记为失败（跳过并列入 `sources_failed`），0 表示不限制。直接填写的节点分享链接不受影响 |
 | `check_front` / `check_front_enabled` | 可选额外前置候选。后置 TCP 节点始终自动选取本轮已测通的前置，链路失败时最多尝试 8 个不同地区或端点的候选。自定义候选也须检测，通过后按同样规则过滤并输出。最终 dialer-proxy 固定到实测前置节点名 |
 | `mihomo_bin` / `mihomo_workdir` / `mihomo_mixed_port` / `mihomo_controller_port` | 检测用 mihomo 的位置与端口（默认 7890 / 9090，避开 sing-box 已占端口，部署时先核对） |
 

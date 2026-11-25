@@ -56,7 +56,9 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_NODES_PER_SOURCE = 5000
 # A subscription URL that yields fewer nodes than this is counted as a
 # failed source (skipped and listed in ``sources_failed``). Not applied to
-# node share links the admin entered directly.
+# node share links the admin entered directly. Default only:
+# ``min_nodes_per_subscription`` in config.json (admin page) overrides it,
+# 0 disables the check.
 MIN_NODES_PER_SUBSCRIPTION = 5
 _CHUNK = 64 * 1024
 
@@ -159,6 +161,7 @@ def make_client(timeout: float = 60.0, cfg=None) -> httpx.AsyncClient:
     client.merge_route = "proxy" if proxy else "direct"
     client.merge_routes = {}
     client.merge_max_bytes = response_limit(cfg)
+    client.merge_min_nodes = min_nodes(cfg)
     client.merge_ssrf_check = proxy is None
     return client
 
@@ -169,6 +172,13 @@ def response_limit(cfg=None) -> int:
     except (TypeError, ValueError):
         mb = 0
     return mb * 1024 * 1024 if mb > 0 else MAX_RESPONSE_BYTES
+
+
+def min_nodes(cfg=None) -> int:
+    value = cfg.data.get("min_nodes_per_subscription") if cfg else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return MIN_NODES_PER_SUBSCRIPTION
+    return value
 
 PLAIN_TEXT_ERROR_MARKERS = (
     "could not be fetched",
@@ -226,9 +236,9 @@ def _check_node_count(nodes: list[dict]) -> list[dict]:
     return nodes
 
 
-def _check_min_nodes(nodes: list[dict]) -> list[dict]:
-    if len(nodes) < MIN_NODES_PER_SUBSCRIPTION:
-        raise FetchError("fetch", f"节点数 {len(nodes)} 少于 {MIN_NODES_PER_SUBSCRIPTION} 个，记为失败")
+def _check_min_nodes(nodes: list[dict], minimum: int = MIN_NODES_PER_SUBSCRIPTION) -> list[dict]:
+    if len(nodes) < minimum:
+        raise FetchError("fetch", f"节点数 {len(nodes)} 少于 {minimum} 个，记为失败")
     return nodes
 
 
@@ -290,8 +300,9 @@ async def fetch_subscription(url: str, client: httpx.AsyncClient,
         if hasattr(client, "merge_routes"):
             client.merge_routes[url] = "local"
         return nodes
+    minimum = getattr(client, "merge_min_nodes", MIN_NODES_PER_SUBSCRIPTION)
     return await _fetch(url, client, timeout,
-                        lambda body: _check_min_nodes(_check_node_count(parse_subscription_body(body))),
+                        lambda body: _check_min_nodes(_check_node_count(parse_subscription_body(body)), minimum),
                         {"User-Agent": "clash-verge/v2.0"})
 
 
