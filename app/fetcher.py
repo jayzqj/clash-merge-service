@@ -54,6 +54,10 @@ _NUMERIC_LABEL = re.compile(r"(?:0x[0-9a-f]*|[0-9]+)")
 # ``fetch_max_mb`` in config.json overrides the default.
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_NODES_PER_SOURCE = 5000
+# A subscription URL that yields fewer nodes than this is counted as a
+# failed source (skipped and listed in ``sources_failed``). Not applied to
+# node share links the admin entered directly.
+MIN_NODES_PER_SUBSCRIPTION = 5
 _CHUNK = 64 * 1024
 
 
@@ -222,6 +226,12 @@ def _check_node_count(nodes: list[dict]) -> list[dict]:
     return nodes
 
 
+def _check_min_nodes(nodes: list[dict]) -> list[dict]:
+    if len(nodes) < MIN_NODES_PER_SUBSCRIPTION:
+        raise FetchError("fetch", f"节点数 {len(nodes)} 少于 {MIN_NODES_PER_SUBSCRIPTION} 个，记为失败")
+    return nodes
+
+
 def _describe(exc: Exception) -> str:
     return exc.reason if isinstance(exc, FetchError) else type(exc).__name__
 
@@ -281,7 +291,7 @@ async def fetch_subscription(url: str, client: httpx.AsyncClient,
             client.merge_routes[url] = "local"
         return nodes
     return await _fetch(url, client, timeout,
-                        lambda body: _check_node_count(parse_subscription_body(body)),
+                        lambda body: _check_min_nodes(_check_node_count(parse_subscription_body(body))),
                         {"User-Agent": "clash-verge/v2.0"})
 
 

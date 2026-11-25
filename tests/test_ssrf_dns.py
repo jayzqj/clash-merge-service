@@ -10,7 +10,9 @@ import httpx
 from app import fetcher
 from app.fetcher import FetchError, ensure_external, fetch_subscription, make_client
 
-YAML = b"proxies:\n- {name: a, type: http, server: 1.2.3.4, port: 80}\n"
+YAML = b"proxies:\n" + b"".join(
+    b"- {name: %s, type: http, server: 1.2.3.4, port: %d}\n" % (n.encode(), 80 + i)
+    for i, n in enumerate("abcde"))
 
 
 def run(coro):
@@ -111,13 +113,13 @@ class RedirectDnsTests(unittest.IsolatedAsyncioTestCase):
     async def test_local_first_url_is_allowed(self):
         nodes = await self.fetch({"http://127.0.0.1:8000/sub": (200, YAML)},
                                  "http://127.0.0.1:8000/sub", {})
-        self.assertEqual(len(nodes), 1)
+        self.assertEqual(len(nodes), 5)
 
     async def test_local_source_may_redirect_locally(self):
         nodes = await self.fetch({"http://127.0.0.1:8000/a": (302, "http://127.0.0.1:8000/b"),
                                   "http://127.0.0.1:8000/b": (200, YAML)},
                                  "http://127.0.0.1:8000/a", {})
-        self.assertEqual(len(nodes), 1)
+        self.assertEqual(len(nodes), 5)
 
     async def test_public_source_redirect_to_rebinding_name_rejected(self):
         with self.assertRaises(FetchError) as caught:
@@ -131,7 +133,7 @@ class RedirectDnsTests(unittest.IsolatedAsyncioTestCase):
                                   "https://b.example/sub": (200, YAML)},
                                  "https://a.example/s/x",
                                  {"b.example": ["93.184.216.35"]})
-        self.assertEqual(len(nodes), 1)
+        self.assertEqual(len(nodes), 5)
 
 
 if __name__ == "__main__":

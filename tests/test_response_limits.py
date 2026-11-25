@@ -85,9 +85,9 @@ class ResponseLimitTests(unittest.TestCase):
 
     def test_node_count_cap(self):
         old = fetcher.MAX_NODES_PER_SOURCE
-        fetcher.MAX_NODES_PER_SOURCE = 3
+        fetcher.MAX_NODES_PER_SOURCE = 6
         try:
-            for count, ok in ((3, True), (4, False)):
+            for count, ok in ((6, True), (7, False)):
                 with self.subTest(count=count):
                     client = client_with(lambda r, c=count: httpx.Response(200, content=nodes_yaml(c)))
 
@@ -96,13 +96,30 @@ class ResponseLimitTests(unittest.TestCase):
                             return await fetch_subscription("https://a.example/sub", client)
 
                     if ok:
-                        self.assertEqual(len(run(go())), 3)
+                        self.assertEqual(len(run(go())), 6)
                     else:
                         with self.assertRaises(FetchError) as caught:
                             run(go())
                         self.assertIn("上限", caught.exception.reason)
         finally:
             fetcher.MAX_NODES_PER_SOURCE = old
+
+    def test_subscription_with_fewer_than_min_nodes_fails(self):
+        self.assertEqual(fetcher.MIN_NODES_PER_SUBSCRIPTION, 5)
+        for count, ok in ((1, False), (4, False), (5, True)):
+            with self.subTest(count=count):
+                client = client_with(lambda r, c=count: httpx.Response(200, content=nodes_yaml(c)))
+
+                async def go():
+                    async with client:
+                        return await fetch_subscription("https://a.example/sub", client)
+
+                if ok:
+                    self.assertEqual(len(run(go())), count)
+                else:
+                    with self.assertRaises(FetchError) as caught:
+                        run(go())
+                    self.assertIn("少于 5", caught.exception.reason)
 
     def test_rule_base_is_limited(self):
         client = client_with(lambda r: httpx.Response(200, content=b"x" * 4096), limit=1024)

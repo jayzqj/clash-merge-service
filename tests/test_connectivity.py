@@ -102,6 +102,10 @@ class ConnectivityTests(unittest.TestCase):
         self.assertTrue(records[dedup_key(back)]['connected'])
 
 
+FIVE_NODES = 'proxies:\n' + ''.join(
+    f' - {{name: fixture{i}, type: http, server: 127.0.0.1, port: {80 + i}}}\n' for i in range(5))
+
+
 class DownloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_transient_proxy_error_retries_before_direct(self):
         count=0
@@ -109,24 +113,24 @@ class DownloadTests(unittest.IsolatedAsyncioTestCase):
             nonlocal count
             count+=1
             if count==1: raise httpx.ConnectError('transient',request=request)
-            return httpx.Response(200,text='proxies:\n - {name: fixture, type: http, server: 127.0.0.1, port: 80}\n')
+            return httpx.Response(200,text=FIVE_NODES)
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as primary:
             primary.merge_direct_fallback=True
             primary.merge_route='proxy'
             primary.merge_routes={}
             with patch('app.fetcher.httpx.AsyncClient') as direct:
-                self.assertEqual(len(await fetch_subscription('https://example.invalid/sub',primary)),1)
+                self.assertEqual(len(await fetch_subscription('https://example.invalid/sub',primary)),5)
                 direct.assert_not_called()
             self.assertEqual(count,2)
     async def test_proxy_failure_falls_back_to_valid_direct_subscription(self):
-        response=httpx.Response(200,text='proxies:\n - {name: fixture, type: http, server: 127.0.0.1, port: 80}\n')
+        response=httpx.Response(200,text=FIVE_NODES)
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _:httpx.Response(502))) as primary:
             primary.merge_direct_fallback=True
             primary.merge_routes={}
             direct=httpx.AsyncClient(transport=httpx.MockTransport(lambda _:response))
             with patch('app.fetcher.httpx.AsyncClient',return_value=direct):
                 nodes=await fetch_subscription('https://example.invalid/sub',primary)
-            self.assertEqual(len(nodes),1)
+            self.assertEqual(len(nodes),5)
             self.assertEqual(primary.merge_routes['https://example.invalid/sub'],'direct-fallback')
 
     async def test_explicitly_disabled_fallback_does_not_use_direct(self):

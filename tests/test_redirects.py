@@ -7,7 +7,9 @@ import httpx
 from app import fetcher
 from app.fetcher import FetchError, fetch_subscription, fetch_text, internal_host
 
-YAML = b"proxies:\n- {name: a, type: http, server: 1.2.3.4, port: 80}\n"
+YAML = b"proxies:\n" + b"".join(
+    b"- {name: %s, type: http, server: 1.2.3.4, port: %d}\n" % (n.encode(), 80 + i)
+    for i, n in enumerate("abcde"))
 
 
 def run(coro):
@@ -41,7 +43,7 @@ class RedirectTests(unittest.TestCase):
             "https://b.example/sub?token=t": (301, "/final"),
             "https://b.example/final": (200, YAML)})
         nodes = run(fetch(client, "https://a.example/s/x"))
-        self.assertEqual([n["name"] for n in nodes], ["a"])
+        self.assertEqual([n["name"] for n in nodes], list("abcde"))
         self.assertEqual(len(seen), 3)
 
     def test_too_many_redirects(self):
@@ -87,7 +89,7 @@ class RedirectTests(unittest.TestCase):
         client, _ = client_for({
             "http://127.0.0.1:8000/a": (302, "http://127.0.0.1:8000/b"),
             "http://127.0.0.1:8000/b": (200, YAML)})
-        self.assertEqual(len(run(fetch(client, "http://127.0.0.1:8000/a"))), 1)
+        self.assertEqual(len(run(fetch(client, "http://127.0.0.1:8000/a"))), 5)
 
     def test_make_client_follows_redirects(self):
         client = fetcher.make_client(5)
