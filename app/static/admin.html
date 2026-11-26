@@ -363,6 +363,10 @@ input[type=text]:focus,input[type=number]:focus,input[type=time]:focus,select:fo
         <small id="purityThresholdHelp">只填 0–100 的数字，例如 15 表示保留 ≤15% 的节点，包含 15%；分数越低越好。保存后从下一轮完整检测生效；无符合条件的节点时返回空节点列表。</small></div>
     </div>
     <div class="fields">
+      <div class="f"><label for="linuxdoThreshold">LinuxDo 分组纯净度上限%</label><input type="number" id="linuxdoThreshold" min="0" max="100" step="any" inputmode="decimal" value="15" aria-describedby="linuxdoThresholdHelp">
+        <small id="linuxdoThresholdHelp">填充 ini 中名字含 LinuxDo 的 url-test 分组：只放分数不高于该值的非 http 节点，没有分数的不放，无达标节点时为 REJECT。不受上面的纯净度过滤开关影响；保存后点「重新应用规则」即可生效。</small></div>
+    </div>
+    <div class="fields">
       <div class="f"><label for="workers">纯净度检测并行数（1–8）</label><input type="number" id="workers" min="1" max="8">
         <small id="workersHelp">每个 worker 独占一个 mihomo 实例，VPS 内存 2GB 建议 ≤4</small>
         <div id="workerAdvice" class="readout" hidden></div>
@@ -539,6 +543,7 @@ function fillForm(c){
   $('purity').checked = !!c.purity_enabled;
   $('purityFilter').checked = !!c.purity_filter_enabled;
   $('purityThreshold').value = c.purity_threshold ?? 15;
+  $('linuxdoThreshold').value = c.linuxdo_purity_threshold ?? 15;
   updatePurityFilter();
   $('delayScreen').checked = c.purity_delay_screen !== false;
   $('workers').value = c.purity_workers||1;
@@ -630,6 +635,9 @@ function renderRun(lr){
   if(has('connectivity_rounds')) rows.push(kv('连通性规则', '每条链路 '+lr.connectivity_rounds+' 次，至少通过 '+(Math.floor(lr.connectivity_rounds/2)+1)+' 次'));
   if(has('groups')) rows.push(kv('分组 / 规则', lr.groups+' 个分组 · '+num(lr.rules)+' 条规则 · '+num(lr.rule_providers)+' 个规则集'));
   if(has('low_purity_group')) rows.push(kv('优选分组', lr.low_purity_group+' · '+num(lr.low_purity_members)+' 个节点'));
+  if(has('linuxdo_group')) rows.push(kv('LinuxDo 分组', lr.linuxdo_group
+    ? lr.linuxdo_group+' · ≤'+lr.linuxdo_threshold+'% · '+num(lr.linuxdo_members)+' 个节点'+(lr.linuxdo_members ? '' : '（为 REJECT，请手动切换）')
+    : 'ini 中未找到名字含 LinuxDo 的 url-test 分组'));
   if(has('connectivity_passed')) rows.push(kv('本轮连通性', '通过 '+lr.connectivity_passed+' / '+lr.connectivity_total+' 个 · 排除 '+lr.connectivity_excluded+' 个'));
   if(!has('connectivity_passed') && lr.kind !== 'reapply') rows.push(kv('连通性记录', '旧版本结果未单独验证连通性，请完成新版检测后更新订阅', 'err'));
   if(has('purity_unscored_connected')) rows.push(kv('连通但未取得评分', lr.purity_unscored_connected+' 个（不影响连通性判定）'));
@@ -835,6 +843,11 @@ async function saveSettings(runNow = true){
       $('purityThreshold').focus(); return;
     }
   }
+  const linuxdoThreshold = $('linuxdoThreshold').valueAsNumber;
+  if(!Number.isFinite(linuxdoThreshold) || linuxdoThreshold < 0 || linuxdoThreshold > 100){
+    say($('setMsg'), 'LinuxDo 分组纯净度上限必须是 0–100 之间的数字。', 'bad');
+    $('linuxdoThreshold').focus(); return;
+  }
   const minNodes = $('minNodes').valueAsNumber;
   if(!Number.isInteger(minNodes) || minNodes < 0 || minNodes > 5000){
     say($('setMsg'), '订阅地址最少节点数必须是 0–5000 之间的整数。', 'bad');
@@ -861,6 +874,7 @@ async function saveSettings(runNow = true){
   if($('purityFilter').checked) body.purity_threshold = $('purityThreshold').valueAsNumber;
   body.fetch_proxy_url = $('fetchProxy').value.trim();
   body.min_nodes_per_subscription = minNodes;
+  body.linuxdo_purity_threshold = linuxdoThreshold;
   if($('clearFront').checked){ body.check_front = null; body.check_front_enabled = false; }
   else if($('frontJson').value.trim()){
     try{
@@ -892,7 +906,7 @@ async function reapply(){ const m = $('reapplyMsg');
     for(let i=0;i<20;i++){ await new Promise(res=>setTimeout(res,1000));
       const s = await api('/api/status?summary=true');
       if(!s.running){ const lr = s.last_run||{};
-        if(lr.ok) say(m, '已应用：'+num(lr.proxies_out)+' 个节点，低纯净分组 '+(lr.low_purity_members||0)+' 个，用时 '+num(lr.duration_seconds)+' 秒。', 'ok');
+        if(lr.ok) say(m, '已应用：'+num(lr.proxies_out)+' 个节点，低纯净分组 '+(lr.low_purity_members||0)+' 个'+(lr.linuxdo_group ? '，LinuxDo 分组 '+(lr.linuxdo_members||0)+' 个' : '')+'，用时 '+num(lr.duration_seconds)+' 秒。', 'ok');
         else say(m, '失败（'+(lr.failed_step||'')+'）：'+(lr.error||''), 'bad');
         tick(); return; } }
     say(m, '还在执行，请稍后刷新页面查看结果。', 'info');

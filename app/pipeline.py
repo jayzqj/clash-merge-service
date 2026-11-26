@@ -63,7 +63,7 @@ from app.converter import apply_exclude, parse_ini
 from app.dialer import (fill_backend_groups, front_group_from_ini,
                         inject_dialer)
 from app.fetcher import FetchError, fetch_subscription, fetch_text, make_client
-from app.groups import add_low_purity_group, scores_from_names
+from app.groups import add_low_purity_group, fill_linuxdo_group, scores_from_names
 from app.merge import (dedup_key, merge_proxies, prefix_purity_names,
                        sort_by_purity)
 from app.names import normalize_name
@@ -316,8 +316,10 @@ async def reapply_rules(cfg: Config, state: ServiceState) -> dict:
             doc, doc["proxies"])
 
         step = "low-purity-group"
-        report.update(add_low_purity_group(doc, doc["proxies"],
-                                           scores_from_names(doc["proxies"])))
+        scores = scores_from_names(doc["proxies"])
+        report.update(add_low_purity_group(doc, doc["proxies"], scores))
+        report.update(fill_linuxdo_group(doc, doc["proxies"], scores,
+                                         cfg.linuxdo_purity_threshold))
 
         step = "write"
         await _write_output(cfg, doc)
@@ -556,6 +558,10 @@ async def run_pipeline(cfg: Config, state: ServiceState) -> dict:
                     scores_by_name[str(p.get("name", ""))] = int(rec["score"])
             report.update(add_low_purity_group(doc, doc["proxies"],
                                                scores_by_name))
+            # linux.do url-test group from the ini: same member rule,
+            # its own threshold (docs/adr/0006, 0011).
+            report.update(fill_linuxdo_group(doc, doc["proxies"], scores_by_name,
+                                             cfg.linuxdo_purity_threshold))
 
             state.progress.update(phase="补充 IPv4 与校验输出")
             report.update(await append_ipv4_names(doc, purity))

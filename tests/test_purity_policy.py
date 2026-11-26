@@ -61,7 +61,7 @@ class HistoryTests(ConfigFixture, unittest.TestCase):
         apply_history(cfg, [p], result(p, 40))
         rec = apply_history(cfg, [p], result(p))[dedup_key(p)]
         self.assertEqual(rec["score"], 40)
-        text = (self.root / "purity_history.json").read_text()
+        text = (self.root / "purity_history.json").read_text(encoding="utf-8")
         self.assertNotIn("test-secret", text)
         self.assertNotIn(p["server"], text)
 
@@ -83,7 +83,7 @@ class HistoryTests(ConfigFixture, unittest.TestCase):
 
     def test_bad_cache_does_not_stop_current_measurements(self):
         p = node()
-        (self.root / "purity_history.json").write_text("broken JSON")
+        (self.root / "purity_history.json").write_text("broken JSON", encoding="utf-8")
         rec = apply_history(self.cfg, [p], result(p, 7))[dedup_key(p)]
         self.assertEqual(rec["score"], 7)
         self.assertTrue(rec["measured"])
@@ -264,7 +264,7 @@ class PipelineTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("后置节点：0 个\n", message)
         for removed in ("TCP", "UDP", "dialer-proxy", "发送方", " 秒"):
             self.assertNotIn(removed, message)
-        persisted = json.loads((self.root / "state.json").read_text())
+        persisted = json.loads((self.root / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(persisted["next_run"], report["next_run"])
         self.assertEqual(persisted["last_run"]["interval_seconds"], 7200)
 

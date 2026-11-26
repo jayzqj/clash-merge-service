@@ -45,6 +45,7 @@
   "fetch_proxy_url": "",
   "fetch_direct_fallback": true,
   "min_nodes_per_subscription": 5,
+  "linuxdo_purity_threshold": 15,
   "connectivity_rounds": 3,
   "excluded_protocols": []
 }

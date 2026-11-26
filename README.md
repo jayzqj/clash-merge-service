@@ -72,6 +72,7 @@ deploy/
 | `connectivity_url` / `connectivity_timeout_ms` | 独立于评分接口的 HTTP 连通性目标（默认 Cloudflare generate_204）与超时（默认 10000ms，范围 1000–30000），默认连续 3 次，至少通过 2 次；可选 5 次，至少通过 3 次 |
 | `fetch_proxy_url` / `fetch_direct_fallback` | 下载代理；默认开启代理失败后直连重试。只影响订阅和规则下载，不改变节点检测链路；报告记录每个源的实际下载路径 |
 | `min_nodes_per_subscription` | 后台「订阅地址最少节点数」，默认 5；订阅地址拉取到的节点少于该数量时记为失败（跳过并列入 `sources_failed`），0 表示不限制。直接填写的节点分享链接不受影响 |
+| `linuxdo_purity_threshold` | 后台「LinuxDo 分组纯净度上限%」，默认 15，0–100（支持小数，包含等于）。填充 ini 中名字含 `LinuxDo` 的 url-test 分组：只放分数不高于该值的非 http 已输出节点，没有分数的不放，无达标节点时为 `REJECT`。不受纯净度过滤开关影响；完整执行和「重新应用规则」都按当前值计算。设计见 `docs/adr/0001`–`0012` |
 | `check_front` / `check_front_enabled` | 可选额外前置候选。后置 TCP 节点始终自动选取本轮已测通的前置，链路失败时最多尝试 8 个不同地区或端点的候选。自定义候选也须检测，通过后按同样规则过滤并输出。最终 dialer-proxy 固定到实测前置节点名 |
 | `mihomo_bin` / `mihomo_workdir` / `mihomo_mixed_port` / `mihomo_controller_port` | 检测用 mihomo 的位置与端口（默认 7890 / 9090，避开 sing-box 已占端口，部署时先核对） |
 
@@ -112,6 +113,7 @@ webhook 只显示是否已设置；`check_front` 只回显名字、类型、服�
 4. 套用 ini（见下）。
 5. 转换之后为静态 TCP 后置固定 `dialer-proxy`，目标为本轮实际测通的前置节点名，确保使用时链路与检测时一致。UDP 后置保持协议支持的直连检测方式；后置分组填入已通过过滤的后置节点。报告 `tested_chains` 逐项记录后置与前置的对应关系。
    低纯净分组仍使用 ≤15 分且非 http 的已输出节点。
+   linux.do 分组的结构、测速地址和分流规则都写在 ini 中，服务只替换名字含 `LinuxDo` 的 url-test 分组成员（阈值见 `linuxdo_purity_threshold`）。ini 写法见 `docs/adr/0011-linuxdo-groups-defined-in-ini.md`。
 6. 发布前保护仍拒绝订阅来源异常造成的非预期数量骤减。因本轮连通性失败、评分阈值或前置依赖主动排除的节点计入预期缩减；全部被排除时允许发布空节点列表（空组使用 REJECT），避免继续返回已测失败节点。
 7. 成功才原子替换输出文件：临时文件写在 `config.json` 同目录（不在 `output/`
    里，候选文件不会被下载到），`mihomo -t` 校验通过后 `os.replace`；

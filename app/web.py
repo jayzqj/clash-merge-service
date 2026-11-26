@@ -461,6 +461,7 @@ class SettingsIn(BaseModel):
     fetch_proxy_url: str | None = Field(default=None, max_length=_MAX_URL)
     fetch_direct_fallback: bool | None = None
     min_nodes_per_subscription: int | None = Field(default=None, ge=0, le=5000, strict=True)
+    linuxdo_purity_threshold: float | None = Field(default=None, ge=0, le=100, strict=True)
     connectivity_url: str | None = Field(default=None, max_length=_MAX_URL)
     connectivity_timeout_ms: int | None = None
     connectivity_rounds: int | None = Field(default=None, strict=True)
@@ -535,7 +536,7 @@ async def api_put_config(body: SettingsIn, request: Request,
         data["merged_public_url"] = body.merged_public_url.strip()
     if body.fetch_proxy_url is not None:
         data["fetch_proxy_url"] = body.fetch_proxy_url.strip()
-    for key in ("fetch_direct_fallback", "min_nodes_per_subscription", "connectivity_url", "connectivity_timeout_ms", "connectivity_rounds", "excluded_protocols"):
+    for key in ("fetch_direct_fallback", "min_nodes_per_subscription", "linuxdo_purity_threshold", "connectivity_url", "connectivity_timeout_ms", "connectivity_rounds", "excluded_protocols"):
         if getattr(body, key) is not None:
             data[key] = getattr(body, key)
     if "check_front" in body.model_fields_set:

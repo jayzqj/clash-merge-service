@@ -72,6 +72,8 @@ DEFAULTS: dict = {
     "connectivity_timeout_ms": 10000,
     "connectivity_rounds": 3,
     "excluded_protocols": [],
+    # Score ceiling for the ini's linux.do url-test group (docs/adr/0006).
+    "linuxdo_purity_threshold": 15,
 }
 
 # The dialer-proxy target group name — FALLBACK only. The ini
@@ -183,6 +185,14 @@ class Config:
             return 1
 
     @property
+    def linuxdo_purity_threshold(self) -> float:
+        value = self.data.get("linuxdo_purity_threshold", 15)
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            return 15
+        return value
+
+    @property
     def check_front(self) -> dict | None:
         front = self.data.get("check_front")
         return front if isinstance(front, dict) else None
@@ -249,6 +259,11 @@ class Config:
                 or not isinstance(threshold, (int, float))
                 or not math.isfinite(threshold) or not 0 <= threshold <= 100):
             errors.append("纯净度预留必须是 0–100 之间的数字")
+        linuxdo = self.data.get("linuxdo_purity_threshold", 15)
+        if (isinstance(linuxdo, bool)
+                or not isinstance(linuxdo, (int, float))
+                or not math.isfinite(linuxdo) or not 0 <= linuxdo <= 100):
+            errors.append("LinuxDo 分组纯净度上限必须是 0–100 之间的数字")
         min_nodes = self.data.get("min_nodes_per_subscription", 5)
         if (isinstance(min_nodes, bool) or not isinstance(min_nodes, int)
                 or not 0 <= min_nodes <= 5000):

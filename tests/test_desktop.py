@@ -131,7 +131,7 @@ class ProcessTests(unittest.TestCase):
                 with self.assertRaises(fetcher.FetchError) as caught:
                     asyncio.run(pipeline._write_output(cfg, {"proxies": []}))
             self.assertEqual(caught.exception.step, "validate")
-            self.assertEqual(target.read_text(), "old file")
+            self.assertEqual(target.read_text(encoding="utf-8"), "old file")
             self.assertFalse((root / "output.tmp.yaml").exists())
 
 
