@@ -78,6 +78,7 @@ def main(keep_running=False):
     mixed, controller = free_port(), free_port()
     cfg = {"subscriptions": [{"id": "fixture", "url": fixture + "/subscription", "enabled": True}],
            "ini_url": fixture + "/rules", "purity_info_url": fixture + "/info", "connectivity_url": fixture + "/ping",
+           "min_nodes_per_subscription": 0,  # the fixture subscription has a single node
            "notify_enabled": False, "execution_start": "00:00", "execution_end": "23:59",
            "purity_workers": 1, "purity_delay_screen": False, "interval_seconds": 86400,
            "mihomo_mixed_port": mixed, "mihomo_controller_port": controller}
